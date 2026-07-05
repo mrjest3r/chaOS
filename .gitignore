@@ -1,0 +1,17 @@
+# Build output
+*.o
+*.bin
+*.elf
+*.dis
+os-image.bin
+
+# Generated disk image (recreate with `make disk.img` && `make programs`)
+disk.img
+
+# Host-built tools (compiled on demand into /tmp, but ignore if built here)
+tools/mkfs
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
