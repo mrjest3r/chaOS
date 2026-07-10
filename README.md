@@ -171,6 +171,3 @@ Kernel low memory is mapped **supervisor-only** in every address space. User pro
 - ELF shared libraries or dynamic linking
 - Virtual filesystem layers, larger disk support
 
-## License
-
-No license file is included yet. Treat this as a personal learning project unless a license is added.
