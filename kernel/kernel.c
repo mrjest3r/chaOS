@@ -2,6 +2,7 @@
 #include "../cpu/paging.h"
 #include "../drivers/screen.h"
 #include "../drivers/serial.h"
+#include "../drivers/keyboard.h"
 #include "kheap.h"
 #include "shell.h"
 #include "fs.h"
@@ -149,6 +150,47 @@ static void run_usermode_selftest() {
     serial_write(done ? "PASS (both isolated tasks exited)\n" : "FAIL (timeout)\n");
 }
 
+/* AUTOTEST: prove user programs can read the keyboard. We inject fake
+ * keystrokes into the keyboard ring buffer, then run greet.elf, which reads a
+ * line via SYS_READLINE and prints a greeting built from it. */
+static void run_input_selftest() {
+    serial_write("[test] keyboard input syscalls (greet.elf)...\n");
+    kbd_inject("chaOS tester\n");
+    int rc = elf_exec("greet.elf");
+    serial_write(rc == 0 ? "[test] input syscalls: PASS\n"
+                         : "[test] input syscalls: FAIL\n");
+}
+
+/* AUTOTEST: scrollback. Print enough lines to push some into history, scroll
+ * the view up, check the visible top row changed, scroll back down and check
+ * the live screen was restored exactly. */
+static void run_scrollback_selftest() {
+    for (int i = 0; i < 30; i++) {
+        char b[16];
+        int_to_ascii(i, b);
+        kprint_at("history line ", 0, MAX_ROWS - 1);
+        kprint(b);
+        kprint("\n");
+    }
+
+    uint8_t live[MAX_COLS * 2];
+    volatile uint8_t *vga = (volatile uint8_t *) VIDEO_ADDRESS;
+    for (int i = 0; i < MAX_COLS * 2; i++) live[i] = vga[i];
+
+    screen_scroll_view(10);
+    int changed = 0;
+    for (int i = 0; i < MAX_COLS * 2; i++)
+        if (vga[i] != live[i]) { changed = 1; break; }
+
+    screen_scroll_view(-1000); /* all the way back to live */
+    int restored = 1;
+    for (int i = 0; i < MAX_COLS * 2; i++)
+        if (vga[i] != live[i]) { restored = 0; break; }
+
+    serial_write("[test] scrollback: ");
+    serial_write((changed && restored) ? "PASS\n" : "FAIL\n");
+}
+
 /* AUTOTEST: run crash.elf, which reads kernel memory from ring 3. With per-
  * process isolation the kernel is mapped supervisor-only, so this page-faults
  * and the kernel terminates just that task. If it ends up dead and the kernel
@@ -190,6 +232,9 @@ void kernel_main() {
     init_kheap();
     serial_write("[boot] kernel heap initialized\n");
 
+    screen_history_init();
+    serial_write("[boot] screen scrollback ready\n");
+
     run_selftests();
     run_fs_selftest();
 
@@ -199,8 +244,10 @@ void kernel_main() {
 #ifdef AUTOTEST
     run_tasking_selftest();
     run_elf_selftest();
+    run_input_selftest();
     run_usermode_selftest();
     run_fault_isolation_selftest();
+    run_scrollback_selftest();
 
     serial_write("[test] done, powering off\n");
     qemu_debug_exit(0);
@@ -222,7 +269,8 @@ void kernel_main() {
     kprint("     \"Y8888P  888  888 \"Y888888    \"Y88888P\"   \"Y8888P\"\n\n");
     kprint("=== chaOS ===\n");
     kprint("Paging + isolated address spaces, heap + disk, preemptive tasks.\n");
-    kprint("Type 'help' for commands, or 'exec hello.elf' to run a program.\n");
+    kprint("Type 'help' for commands, or 'exec greet.elf' to talk to a program.\n");
+    kprint("PgUp/PgDn scroll back through screen history.\n");
     shell_prompt();
 
     /* Idle loop: run queued shell commands here (interrupts enabled) so blocking

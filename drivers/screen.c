@@ -1,6 +1,7 @@
 #include "screen.h"
 #include "../cpu/ports.h"
 #include "../libc/mem.h"
+#include "../kernel/kheap.h"
 #include "serial.h"
 #include <stdint.h>
 
@@ -12,6 +13,78 @@ int get_offset(int col, int row);
 int get_offset_row(int offset);
 int get_offset_col(int offset);
 
+/* ---- scrollback history --------------------------------------------------
+ * A ring buffer of the last HISTORY_LINES lines that scrolled off the top of
+ * the screen (characters + attributes, one VGA row each). It lives on the
+ * kernel heap, so scrollback only starts working after screen_history_init();
+ * before that the driver behaves exactly like it always did. */
+#define HISTORY_LINES 200
+#define ROW_BYTES     (MAX_COLS * 2)
+
+static uint8_t *history   = 0;  /* HISTORY_LINES rows of ROW_BYTES           */
+static int hist_head      = 0;  /* next slot to overwrite                    */
+static int hist_count     = 0;  /* how many rows are valid                   */
+static int view_offset    = 0;  /* 0 = live screen, N = scrolled up N lines  */
+static uint8_t *saved_live = 0; /* copy of the live screen while scrolled    */
+
+void screen_history_init() {
+    history    = (uint8_t *) malloc(HISTORY_LINES * ROW_BYTES);
+    saved_live = (uint8_t *) malloc(MAX_ROWS * ROW_BYTES);
+    if (!history || !saved_live) { history = 0; saved_live = 0; }
+}
+
+/* Save the top row into the history ring (called just before it scrolls off). */
+static void history_push_top_row() {
+    if (!history) return;
+    memory_copy((uint8_t *) VIDEO_ADDRESS, history + hist_head * ROW_BYTES, ROW_BYTES);
+    hist_head = (hist_head + 1) % HISTORY_LINES;
+    if (hist_count < HISTORY_LINES) hist_count++;
+}
+
+/* Redraw the viewport for the current view_offset. Visible lines are taken
+ * from the tail of [history rows..., saved live rows...]. */
+static void render_view() {
+    for (int r = 0; r < MAX_ROWS; r++) {
+        int li = hist_count - view_offset + r; /* index into the combined list */
+        uint8_t *dst = (uint8_t *) VIDEO_ADDRESS + r * ROW_BYTES;
+        if (li < hist_count) {
+            int slot = (hist_head - hist_count + li + 2 * HISTORY_LINES) % HISTORY_LINES;
+            memory_copy(history + slot * ROW_BYTES, dst, ROW_BYTES);
+        } else {
+            memory_copy(saved_live + (li - hist_count) * ROW_BYTES, dst, ROW_BYTES);
+        }
+    }
+}
+
+void screen_scroll_view(int lines) {
+    if (!history) return;
+
+    int new_offset = view_offset + lines;
+    if (new_offset < 0) new_offset = 0;
+    if (new_offset > hist_count) new_offset = hist_count;
+    if (new_offset == view_offset) return;
+
+    if (view_offset == 0) {
+        /* Entering scrollback: remember what the live screen looks like. */
+        memory_copy((uint8_t *) VIDEO_ADDRESS, saved_live, MAX_ROWS * ROW_BYTES);
+    }
+
+    view_offset = new_offset;
+
+    if (view_offset == 0) {
+        /* Back to live output. */
+        memory_copy(saved_live, (uint8_t *) VIDEO_ADDRESS, MAX_ROWS * ROW_BYTES);
+        return;
+    }
+
+    render_view();
+}
+
+/* New output always lands on the live screen, so leave scrollback first. */
+static void snap_to_live() {
+    if (view_offset > 0) screen_scroll_view(-view_offset);
+}
+
 /**********************************************************
  * Public Kernel API functions                            *
  **********************************************************/
@@ -21,6 +94,8 @@ int get_offset_col(int offset);
  * If col, row, are negative, we will use the current offset
  */
 void kprint_at(char *message, int col, int row) {
+    snap_to_live();
+
     /* Set cursor if col/row are negative */
     int offset;
     if (col >= 0 && row >= 0)
@@ -48,6 +123,7 @@ void kprint(char *message) {
 }
 
 void kprint_backspace() {
+    snap_to_live();
     int offset = get_cursor_offset()-2;
     int row = get_offset_row(offset);
     int col = get_offset_col(offset);
@@ -97,6 +173,7 @@ int print_char(char c, int col, int row, char attr) {
 
     /* Check if the offset is over screen size and scroll */
     if (offset >= MAX_ROWS * MAX_COLS * 2) {
+        history_push_top_row(); /* keep the vanishing top line for scrollback */
         int i;
         for (i = 1; i < MAX_ROWS; i++) 
             memory_copy((uint8_t*)(get_offset(0, i) + VIDEO_ADDRESS),
@@ -136,6 +213,7 @@ void set_cursor_offset(int offset) {
 }
 
 void clear_screen() {
+    snap_to_live();
     int screen_size = MAX_COLS * MAX_ROWS;
     int i;
     uint8_t *screen = (uint8_t*) VIDEO_ADDRESS;

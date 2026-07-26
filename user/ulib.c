@@ -5,6 +5,20 @@ void uprint(const char *s) {
     asm volatile("int $0x80" : : "a" (SYS_PRINT), "b" (s));
 }
 
+char ugetchar(void) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_GETCHAR));
+    return (char) r;
+}
+
+int ureadline(char *buf, int max) {
+    int r;
+    asm volatile("int $0x80"
+                 : "=a" (r)
+                 : "a" (SYS_READLINE), "b" (buf), "c" (max));
+    return r;
+}
+
 int ugetpid(void) {
     int r;
     asm volatile("int $0x80" : "=a" (r) : "a" (SYS_GETPID));

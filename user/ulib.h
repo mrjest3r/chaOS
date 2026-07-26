@@ -9,6 +9,8 @@
 
 void     uprint(const char *s);
 void     uprint_dec(uint32_t v);
+char     ugetchar(void);                    /* blocks until a key is typed  */
+int      ureadline(char *buf, int max);     /* echoing line read -> length  */
 int      ugetpid(void);
 void     usleep(int ticks);
 int      uwritefile(const char *name, const void *buf, int len);

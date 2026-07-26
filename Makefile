@@ -17,7 +17,7 @@ CFLAGS = -g -ffreestanding -Wall -Wextra -fno-exceptions -fno-builtin -m32
 UFLAGS = -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
          -fno-asynchronous-unwind-tables -m32 -Wall -Wextra
 HOSTCC = cc
-USER_PROGS = user/hello.elf user/spin.elf user/crash.elf
+USER_PROGS = user/hello.elf user/spin.elf user/crash.elf user/greet.elf
 
 # First rule is run by default
 os-image.bin: boot/bootsect.bin kernel.bin

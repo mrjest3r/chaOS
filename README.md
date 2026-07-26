@@ -22,7 +22,8 @@ A 32-bit x86 hobby operating system built from scratch in C and assembly. chaOS 
 | **Memory** | Paging (16 MiB kernel identity map, supervisor-only), kernel heap (`malloc`/`free`), physical frame pool |
 | **Isolation** | Per-process page directories; user programs at `0x40000000`; kernel memory not user-accessible |
 | **Multitasking** | Preemptive round-robin scheduler; kernel threads and ring-3 user tasks with sleep/yield/exit |
-| **I/O** | VGA text mode, PS/2 keyboard, COM1 serial, ATA PIO disk |
+| **I/O** | VGA text mode with PgUp/PgDn scrollback, PS/2 keyboard, COM1 serial, ATA PIO disk |
+| **Input** | Blocking `SYS_GETCHAR` / `SYS_READLINE` syscalls; foreground programs own the keyboard |
 | **Storage** | Simple persistent filesystem on `disk.img` (fixed directory, up to 32 files) |
 | **Userspace** | ELF32 loader, separate user build (`user/`), programs injected onto disk at build time |
 | **Shell** | Interactive command shell with filesystem, task, memory, and `exec` commands |
@@ -131,7 +132,9 @@ make run
 exec myprog.elf
 ```
 
-Available user library calls (`user/ulib.h`): `uprint`, `ugetpid`, `usleep`, `uwritefile`, `ureadfile`, `uuptime`, `uexit`.
+Available user library calls (`user/ulib.h`): `uprint`, `ugetchar`, `ureadline`, `ugetpid`, `usleep`, `uwritefile`, `ureadfile`, `uuptime`, `uexit`.
+
+`ureadline` blocks until Enter; the kernel echoes keystrokes and handles Backspace. Try `exec greet.elf` for a demo.
 
 Syscall numbers are defined in `kernel/syscall.h` and shared with userspace.
 
@@ -154,6 +157,8 @@ Syscall numbers are defined in `kernel/syscall.h` and shared with userspace.
 | `page` | Allocate a page-aligned block |
 | `fault` | Trigger a kernel page fault (halts) |
 | `reboot` / `shutdown` / `end` | Restart, power off, or halt |
+
+**PgUp / PgDn** scroll back through the last 200 lines of screen history; any new output snaps back to the live view.
 
 ## Project layout
 
@@ -188,11 +193,12 @@ Kernel low memory is mapped **supervisor-only** in every address space. User pro
 5. Ring 3, TSS, `int 0x80` syscalls, kernel relocation  
 6. Expanded syscalls, schedulable user tasks, fault isolation  
 7. **Per-process address spaces**, ELF loader, concurrent isolated programs  
+8. Keyboard input syscalls (interactive programs), screen scrollback, bootable ISO  
 
 ## Possible next steps
 
-- Higher-half kernel (map kernel at a fixed high address)
+- Process management: spawn/wait syscalls, user-space shell
 - User-readable command-line arguments (`argc`/`argv`)
-- Blocking keyboard input syscall
+- Higher-half kernel (map kernel at a fixed high address)
 - ELF shared libraries or dynamic linking
 - Virtual filesystem layers, larger disk support

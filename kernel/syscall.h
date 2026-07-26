@@ -12,6 +12,8 @@
 #define SYS_UPTIME    6  /* -> eax = timer ticks since boot               */
 #define SYS_YIELD     7  /* give up the CPU                               */
 #define SYS_SLEEP     8  /* ebx = ticks; block until they elapse          */
+#define SYS_GETCHAR   9  /* block until a key is typed -> eax = char      */
+#define SYS_READLINE  10 /* ebx = buf, ecx = max; echoing line read -> len */
 
 /* Registers the int 0x80 handler. */
 void syscall_init();

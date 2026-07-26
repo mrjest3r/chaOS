@@ -6,6 +6,7 @@
 #include "../cpu/paging.h"
 #include "../libc/mem.h"
 #include "../drivers/screen.h"
+#include "../drivers/keyboard.h"
 
 /* A statically-linked ELF executable places each PT_LOAD segment at a fixed
  * virtual address (USER_BASE). Every program is loaded into its own address
@@ -131,8 +132,13 @@ int elf_exec(const char *path) {
         return id;
     }
 
+    /* Foreground program: it owns the keyboard until it exits. */
+    kbd_set_focus(KBD_FOCUS_PROGRAM);
+
     /* Idle until the program terminates; the timer keeps preempting us so it
      * actually runs (and any other tasks keep making progress too). */
     while (task_alive(id)) asm volatile("hlt");
+
+    kbd_set_focus(KBD_FOCUS_SHELL);
     return 0;
 }

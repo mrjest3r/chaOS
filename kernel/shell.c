@@ -86,6 +86,7 @@ static void cmd_help() {
     kprint("  reboot      - restart the machine\n");
     kprint("  shutdown    - power off the machine\n");
     kprint("  end         - halt the CPU\n");
+    kprint("PgUp/PgDn scroll back through screen history.\n");
 }
 
 static const char *task_state_name(task_state_t s) {
