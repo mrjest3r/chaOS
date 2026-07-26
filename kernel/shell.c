@@ -2,14 +2,44 @@
 #include "kheap.h"
 #include "fs.h"
 #include "task.h"
-#include "user_demo.h"
 #include "elf.h"
+#include "../cpu/vmm.h"
 #include "../drivers/screen.h"
 #include "../libc/string.h"
 #include "../libc/mem.h"
 #include "../cpu/ports.h"
 #include "../cpu/power.h"
 #include <stdint.h>
+
+/* ---- command queue ------------------------------------------------------ */
+/* The keyboard IRQ hands finished lines to shell_submit(); the kernel idle
+ * loop picks them up with shell_poll(). Commands therefore always run with
+ * interrupts enabled and can safely block (e.g. 'exec' waiting on a task). */
+
+#define SHELL_LINE_MAX 256
+static char shell_pending_line[SHELL_LINE_MAX];
+static volatile int shell_pending = 0;
+
+void shell_submit(char *input) {
+    if (shell_pending) return; /* previous command still queued; drop */
+    int i = 0;
+    while (input[i] != '\0' && i < SHELL_LINE_MAX - 1) {
+        shell_pending_line[i] = input[i];
+        i++;
+    }
+    shell_pending_line[i] = '\0';
+    shell_pending = 1;
+}
+
+void shell_poll() {
+    if (!shell_pending) return;
+    char line[SHELL_LINE_MAX];
+    int i = 0;
+    while (shell_pending_line[i] != '\0') { line[i] = shell_pending_line[i]; i++; }
+    line[i] = '\0';
+    shell_pending = 0;
+    shell_execute(line);
+}
 
 /* Returns 1 if 's' begins with 'prefix'. */
 static int starts_with(char *s, const char *prefix) {
@@ -49,8 +79,8 @@ static void cmd_help() {
     kprint("  rm F        - delete file F\n");
     kprint("  format      - erase the filesystem\n");
     kprint("  tasks       - list running tasks and activity counters\n");
-    kprint("  user        - drop to ring 3 and run a syscall demo\n");
-    kprint("  exec F      - load and run ELF program F from disk\n");
+    kprint("  exec F      - load and run ELF program F in its own address space\n");
+    kprint("  frames      - show physical frame pool usage\n");
     kprint("  page        - request a page-aligned kmalloc\n");
     kprint("  fault       - trigger a page fault (will halt)\n");
     kprint("  reboot      - restart the machine\n");
@@ -197,6 +227,14 @@ static void cmd_page() {
     kprint("\n");
 }
 
+static void cmd_frames() {
+    kprint("Frame pool: ");
+    print_dec(frame_used());
+    kprint(" / ");
+    print_dec(frame_total());
+    kprint(" frames used (4 KiB each)\n");
+}
+
 static void cmd_exec(char *name) {
     kprint("Loading ");
     kprint(name);
@@ -256,12 +294,10 @@ void shell_execute(char *input) {
         kprint("Filesystem formatted.\n");
     } else if (strcmp(input, "tasks") == 0) {
         cmd_tasks();
-    } else if (strcmp(input, "user") == 0) {
-        kprint("Launching a ring-3 user task...\n");
-        usermode_run();
-        kprint("User task finished; back at the shell.\n");
     } else if (starts_with(input, "exec ")) {
         cmd_exec(input + 5);
+    } else if (strcmp(input, "frames") == 0) {
+        cmd_frames();
     } else if (strcmp(input, "shutdown") == 0) {
         kprint("Powering off...\n");
         power_off();

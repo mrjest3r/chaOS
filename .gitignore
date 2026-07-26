@@ -3,6 +3,8 @@
 *.bin
 *.elf
 *.dis
+*.iso
+isodir/
 os-image.bin
 
 # Generated disk image (recreate with `make disk.img` && `make programs`)

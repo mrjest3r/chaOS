@@ -1,10 +1,10 @@
-/* Link user programs to run inside the identity-mapped user region
- * (USER_LOAD_BASE = 4 MiB). The kernel's ELF loader copies the PT_LOAD
- * segments to these addresses and jumps to _start in ring 3. */
+/* Link user programs to run at USER_BASE (1 GiB). Every process gets its own
+ * address space with this window mapped, so all programs can be linked to the
+ * same address and still run concurrently, fully isolated. */
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x400000;
+    . = 0x40000000;
 
     .text : {
         *(.text._start)   /* keep crt0 entry at the very front */

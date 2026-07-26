@@ -15,7 +15,8 @@ typedef struct task {
     uint32_t esp;              /* saved kernel stack pointer (first field)   */
     uint32_t kstack;           /* base of kernel-stack allocation (to free)  */
     uint32_t kstack_top;       /* top of kernel stack -> loaded into TSS.esp0*/
-    uint32_t ustack;           /* base of user-stack allocation (0 if kernel)*/
+    uint32_t page_dir;         /* CR3 for this task (kernel_directory if k.) */
+    uint32_t user_stack_top;   /* ring-3 stack top (user vaddr; 0 if kernel) */
     void (*entry)();           /* task entry point                           */
     int id;
     int is_user;               /* 1 = runs in ring 3                         */
@@ -30,8 +31,11 @@ void tasking_init();
 /* Spawns a ring-0 kernel thread. Returns its id, or -1 on failure. */
 int task_create(void (*entry)());
 
-/* Spawns a ring-3 user task with its own kernel + user stacks. */
-int task_create_user(void (*entry)());
+/* Spawns a ring-3 user task that runs in the given address space ('page_dir',
+ * a CR3 value) starting at 'entry' on the user stack top 'user_stack_top'. The
+ * caller is responsible for having mapped the program and stack into page_dir.
+ * Returns the task id, or -1 on failure. */
+int task_create_user(uint32_t entry, uint32_t page_dir, uint32_t user_stack_top);
 
 /* Round-robin switch to the next runnable task. Called from the timer IRQ and
  * from the blocking syscalls below. */

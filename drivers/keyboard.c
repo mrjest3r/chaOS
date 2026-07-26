@@ -4,7 +4,7 @@
 #include "screen.h"
 #include "../libc/string.h"
 #include "../libc/function.h"
-#include "../kernel/kernel.h"
+#include "../kernel/shell.h"
 #include <stdint.h>
 
 #define BACKSPACE 0x0E
@@ -62,7 +62,7 @@ static void keyboard_callback(registers_t *regs) {
 
     if (scancode == ENTER) {
         kprint("\n");
-        user_input(key_buffer); /* hand the finished line to the kernel */
+        shell_submit(key_buffer); /* queue for the main loop; do not run here */
         key_buffer[0] = '\0';
         return;
     }

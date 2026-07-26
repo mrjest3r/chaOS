@@ -2,6 +2,8 @@
 #include "kheap.h"
 #include "../cpu/gdt.h"
 #include "../cpu/timer.h"
+#include "../cpu/paging.h"
+#include "../cpu/vmm.h"
 
 /* Implemented in cpu/context.asm */
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
@@ -10,12 +12,15 @@ extern void enter_user_mode(uint32_t entry, uint32_t user_stack);
 
 #define MAX_TASKS   8
 #define KSTACK_SIZE 8192
-#define USTACK_SIZE 8192
 
 static task_t tasks[MAX_TASKS];
 static int current_idx = 0;
 static task_t *current = 0;
 volatile int multitasking_on = 0;
+
+/* Mirrors the CR3 currently loaded, so we only reload (and flush the TLB) when
+ * actually switching between different address spaces. */
+static uint32_t active_cr3 = 0;
 
 /* Trampoline for kernel threads. context_switch "returns" here the first time a
  * task is scheduled. Interrupts were disabled during the switch, so re-enable
@@ -27,10 +32,12 @@ static void kthread_bootstrap() {
 }
 
 /* Trampoline for user tasks. Runs in ring 0 on the task's kernel stack, then
- * drops to ring 3. enter_user_mode sets IF in the ring-3 EFLAGS, so we do not
- * enable interrupts here (they must stay off until the iret). */
+ * drops to ring 3. By the time we get here the scheduler has already loaded the
+ * task's page directory, so the user stack/entry virtual addresses are valid.
+ * enter_user_mode sets IF in the ring-3 EFLAGS, so we do not enable interrupts
+ * here (they must stay off until the iret). */
 static void user_bootstrap() {
-    enter_user_mode((uint32_t) current->entry, current->ustack + USTACK_SIZE);
+    enter_user_mode((uint32_t) current->entry, current->user_stack_top);
 }
 
 void tasking_init() {
@@ -46,10 +53,14 @@ void tasking_init() {
     tasks[0].sleep_until = 0;
     tasks[0].kstack = 0;
     tasks[0].kstack_top = 0x90000; /* protected-mode boot stack top */
-    tasks[0].ustack = 0;
+    tasks[0].page_dir = (uint32_t) kernel_directory;
+    tasks[0].user_stack_top = 0;
 
     current = &tasks[0];
     current_idx = 0;
+
+    /* Paging is already on with the kernel directory loaded. */
+    active_cr3 = (uint32_t) kernel_directory;
 }
 
 /* Finds a reusable slot (never slot 0). Frees the stacks of a DEAD slot before
@@ -94,34 +105,31 @@ int task_create(void (*entry)()) {
     t->sleep_until = 0;
     t->kstack = kstack;
     t->kstack_top = kstack + KSTACK_SIZE;
-    t->ustack = 0;
+    t->page_dir = (uint32_t) kernel_directory;
+    t->user_stack_top = 0;
 
     prime_kstack(t, kthread_bootstrap);
     t->state = TASK_READY;
     return t->id;
 }
 
-int task_create_user(void (*entry)()) {
+int task_create_user(uint32_t entry, uint32_t page_dir, uint32_t user_stack_top) {
     int i = alloc_slot();
     if (i < 0) return -1;
 
     uint32_t kstack = (uint32_t) malloc(KSTACK_SIZE);
-    uint32_t ustack = (uint32_t) malloc(USTACK_SIZE);
-    if (!kstack || !ustack) {
-        if (kstack) free((void *) kstack);
-        if (ustack) free((void *) ustack);
-        return -1;
-    }
+    if (!kstack) return -1;
 
     task_t *t = &tasks[i];
     t->id = i;
-    t->entry = entry;
+    t->entry = (void (*)()) entry;
     t->is_user = 1;
     t->counter = 0;
     t->sleep_until = 0;
     t->kstack = kstack;
     t->kstack_top = kstack + KSTACK_SIZE;
-    t->ustack = ustack;
+    t->page_dir = page_dir;
+    t->user_stack_top = user_stack_top;
 
     prime_kstack(t, user_bootstrap);
     t->state = TASK_READY;
@@ -168,6 +176,14 @@ void schedule() {
      * from ring 3. Must point at the task we are about to run. */
     tss_set_stack(current->kstack_top);
 
+    /* Switch address spaces if the next task lives in a different one. The
+     * kernel is mapped identically in every directory, so the code and stacks
+     * we are running on remain valid across the CR3 load. */
+    if (current->page_dir && current->page_dir != active_cr3) {
+        load_page_directory((uint32_t *) current->page_dir);
+        active_cr3 = current->page_dir;
+    }
+
     context_switch(&prev->esp, current->esp);
 }
 
@@ -194,17 +210,23 @@ void task_exit() {
         for (;;) asm volatile("hlt");
     }
 
-    /* The user stack is no longer in use, so it is safe to free here. The kernel
-     * stack is still active (we are running on it), so it is reclaimed later by
-     * alloc_slot() when the slot is reused. */
-    if (current->ustack) {
-        free((void *) current->ustack);
-        current->ustack = 0;
+    /* If this was a user task with its own address space, return to the kernel
+     * directory first (where the frame pool is reachable) and then free the
+     * process's page directory, page tables and user frames. The kernel stack
+     * we are running on lives in the shared kernel mapping, so it stays valid. */
+    uint32_t dir = current->page_dir;
+    if (dir && dir != (uint32_t) kernel_directory) {
+        load_page_directory(kernel_directory);
+        active_cr3 = (uint32_t) kernel_directory;
+        vmm_destroy_addrspace(dir);
+        current->page_dir = (uint32_t) kernel_directory;
     }
+
     current->state = TASK_DEAD;
 
     /* Switch away permanently. schedule() will pick another runnable task
-     * (task 0 at worst) and never switch back to this DEAD slot. */
+     * (task 0 at worst) and never switch back to this DEAD slot. The kernel
+     * stack is reclaimed later by alloc_slot() when the slot is reused. */
     schedule();
 
     for (;;) asm volatile("hlt"); /* unreachable */

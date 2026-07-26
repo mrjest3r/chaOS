@@ -2,13 +2,11 @@
 #include "../cpu/paging.h"
 #include "../drivers/screen.h"
 #include "../drivers/serial.h"
-#include "kernel.h"
 #include "kheap.h"
 #include "shell.h"
 #include "fs.h"
 #include "task.h"
 #include "syscall.h"
-#include "user_demo.h"
 #include "elf.h"
 #include "../cpu/gdt.h"
 #include "../cpu/timer.h"
@@ -117,37 +115,49 @@ static void run_tasking_selftest() {
     int_to_ascii((int) c2, b); serial_write("[test] task2 counter = "); serial_write(b); serial_write("\n");
 }
 
-/* AUTOTEST: spawn two ring-3 user tasks that run concurrently. Each writes a
- * file, sleeps (blocking via the scheduler), reads it back and exits through
- * SYS_EXIT. We wait until both terminate, proving preemptive user-mode
- * multitasking, blocking syscalls and process teardown all work. */
+/* AUTOTEST: load and run an ELF program from the disk filesystem. The program
+ * (user/hello.elf) is injected into the image by 'make programs'. This proves
+ * the whole pipeline: fs read -> address space -> ELF parse -> segment load ->
+ * ring-3 exec -> clean teardown. */
+static void run_elf_selftest() {
+    serial_write("[test] exec hello.elf from disk...\n");
+    int rc = elf_exec("hello.elf");
+    serial_write(rc == 0 ? "[test] elf loader: PASS\n"
+                         : "[test] elf loader: FAIL\n");
+}
+
+/* AUTOTEST: spawn two copies of spin.elf at once. Each runs in its own address
+ * space at the same virtual address (USER_BASE), sleeps between prints and
+ * exits. We wait until both terminate, proving per-process address spaces,
+ * preemptive user-mode multitasking, blocking syscalls and teardown all work. */
 static void run_usermode_selftest() {
-    serial_write("[test] spawning 2 ring-3 user tasks...\n");
-    int a = usermode_spawn();
-    int b = usermode_spawn();
+    serial_write("[test] spawning 2 isolated ELF tasks (spin.elf x2)...\n");
+    int a = elf_spawn("spin.elf");
+    int b = elf_spawn("spin.elf");
     if (a < 0 || b < 0) {
-        serial_write("[test] user tasks: FAIL (spawn)\n");
+        serial_write("[test] isolated tasks: FAIL (spawn)\n");
         return;
     }
 
     uint32_t start = timer_ticks();
-    while ((task_alive(a) || task_alive(b)) && (timer_ticks() - start) < 400) {
+    while ((task_alive(a) || task_alive(b)) && (timer_ticks() - start) < 600) {
         asm volatile("hlt");
     }
 
     int done = !task_alive(a) && !task_alive(b);
-    serial_write("[test] user tasks: ");
-    serial_write(done ? "PASS (both exited cleanly)\n" : "FAIL (timeout)\n");
+    serial_write("[test] isolated tasks: ");
+    serial_write(done ? "PASS (both isolated tasks exited)\n" : "FAIL (timeout)\n");
 }
 
-/* AUTOTEST: spawn a rogue ring-3 task that runs a privileged instruction. The
- * kernel must fault-isolate it (terminate the task) and keep running. If the
- * kernel survived to run this and the task ends up dead, fault isolation works.*/
+/* AUTOTEST: run crash.elf, which reads kernel memory from ring 3. With per-
+ * process isolation the kernel is mapped supervisor-only, so this page-faults
+ * and the kernel terminates just that task. If it ends up dead and the kernel
+ * is still running this code, isolation and fault handling both work. */
 static void run_fault_isolation_selftest() {
-    serial_write("[test] spawning rogue ring-3 task (expects a #GP)...\n");
-    int r = usermode_spawn_faulting();
+    serial_write("[test] spawning crash.elf (reads kernel memory from ring 3)...\n");
+    int r = elf_spawn("crash.elf");
     if (r < 0) {
-        serial_write("[test] fault isolation: FAIL (spawn)\n");
+        serial_write("[test] isolation: FAIL (spawn)\n");
         return;
     }
 
@@ -156,19 +166,9 @@ static void run_fault_isolation_selftest() {
         asm volatile("hlt");
     }
 
-    serial_write("[test] fault isolation: ");
-    serial_write(!task_alive(r) ? "PASS (rogue task killed, kernel alive)\n"
+    serial_write("[test] isolation: ");
+    serial_write(!task_alive(r) ? "PASS (task killed, kernel alive)\n"
                                 : "FAIL (task still alive)\n");
-}
-
-/* AUTOTEST: load and run an ELF program from the disk filesystem. The program
- * (user/hello.elf) is injected into the image by 'make programs'. This proves
- * the whole pipeline: fs read -> ELF parse -> segment load -> ring-3 exec. */
-static void run_elf_selftest() {
-    serial_write("[test] exec hello.elf from disk...\n");
-    int rc = elf_exec("hello.elf");
-    serial_write(rc == 0 ? "[test] elf loader: PASS\n"
-                         : "[test] elf loader: FAIL\n");
 }
 #endif /* AUTOTEST */
 
@@ -185,7 +185,7 @@ void kernel_main() {
     serial_write("[boot] interrupts + syscalls installed\n");
 
     init_paging();
-    serial_write("[boot] paging enabled (first 16 MiB identity-mapped)\n");
+    serial_write("[boot] paging enabled (kernel identity-mapped, supervisor-only)\n");
 
     init_kheap();
     serial_write("[boot] kernel heap initialized\n");
@@ -198,9 +198,9 @@ void kernel_main() {
 
 #ifdef AUTOTEST
     run_tasking_selftest();
+    run_elf_selftest();
     run_usermode_selftest();
     run_fault_isolation_selftest();
-    run_elf_selftest();
 
     serial_write("[test] done, powering off\n");
     qemu_debug_exit(0);
@@ -221,12 +221,15 @@ void kernel_main() {
     kprint("    Y88b.     888  888 888  888   Y88b. .d88P Y88b  d88P\n");
     kprint("     \"Y8888P  888  888 \"Y888888    \"Y88888P\"   \"Y8888P\"\n\n");
     kprint("=== chaOS ===\n");
-    kprint("Paging on, heap + disk ready, multitasking live.\n");
-    kprint("Type 'help' for commands.\n");
+    kprint("Paging + isolated address spaces, heap + disk, preemptive tasks.\n");
+    kprint("Type 'help' for commands, or 'exec hello.elf' to run a program.\n");
     shell_prompt();
-#endif
-}
 
-void user_input(char *input) {
-    shell_execute(input);
+    /* Idle loop: run queued shell commands here (interrupts enabled) so blocking
+     * commands like 'exec' can hlt and let the timer preempt into user tasks. */
+    for (;;) {
+        shell_poll();
+        asm volatile("sti; hlt");
+    }
+#endif
 }

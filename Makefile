@@ -17,7 +17,7 @@ CFLAGS = -g -ffreestanding -Wall -Wextra -fno-exceptions -fno-builtin -m32
 UFLAGS = -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
          -fno-asynchronous-unwind-tables -m32 -Wall -Wextra
 HOSTCC = cc
-USER_PROGS = user/hello.elf
+USER_PROGS = user/hello.elf user/spin.elf user/crash.elf
 
 # First rule is run by default
 os-image.bin: boot/bootsect.bin kernel.bin
@@ -41,6 +41,21 @@ disk.img:
 
 run: os-image.bin disk.img programs
 	qemu-system-i386 -boot a -fda os-image.bin -hda disk.img -serial stdio
+
+# Bootable CD image via El Torito floppy emulation: the BIOS treats the
+# embedded 1.44 MiB floppy image as drive 0, so the existing bootloader works
+# unchanged. Use this to run chaOS in VirtualBox/VMware/QEMU as a CD boot.
+chaos.iso: os-image.bin
+	rm -rf isodir && mkdir -p isodir
+	cp os-image.bin isodir/
+	genisoimage -quiet -V "CHAOS" -b os-image.bin -o chaos.iso isodir
+	rm -rf isodir
+
+iso: chaos.iso disk.img programs
+
+# Boot from the ISO in QEMU (same setup a desktop VM would use).
+run-iso: iso
+	qemu-system-i386 -boot d -cdrom chaos.iso -hda disk.img -serial stdio
 
 # Automated headless test build. Compiles with -DAUTOTEST so the kernel runs
 # its self-tests and then powers off QEMU through the isa-debug-exit device.
@@ -86,6 +101,6 @@ debug: os-image.bin kernel.elf disk.img
 	nasm $< -f bin -o $@
 
 clean:
-	rm -rf *.bin *.dis *.o os-image.bin *.elf
+	rm -rf *.bin *.dis *.o os-image.bin *.elf *.iso isodir
 	rm -rf kernel/*.o boot/*.bin drivers/*.o boot/*.o cpu/*.o libc/*.o
 	rm -rf user/*.o user/*.elf

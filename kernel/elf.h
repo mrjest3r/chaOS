@@ -3,11 +3,8 @@
 
 #include <stdint.h>
 
-/* Region where user programs are loaded. Sits above the kernel heap (which
- * ends at 4 MiB) and below the identity-map limit (16 MiB). User ELF programs
- * must be linked to run inside this window (see user/linker.ld). */
-#define USER_LOAD_BASE  0x00400000u
-#define USER_LOAD_LIMIT 0x01000000u
+/* User programs are linked to run at USER_BASE (see cpu/vmm.h and
+ * user/linker.ld) and are loaded into a private per-process address space. */
 
 /* ---- ELF32 on-disk structures (little-endian, i386) --------------------- */
 
@@ -45,14 +42,21 @@ typedef struct {
 #define ELFCLASS32  1
 #define ELFDATA2LSB 1
 
-/* Validates an ELF32 image held in 'data' (of 'size' bytes) and copies its
- * PT_LOAD segments into the user load region. On success returns 0 and stores
- * the entry point in *entry_out. Returns a negative value on any error. */
-int elf_load(const uint8_t *data, uint32_t size, uint32_t *entry_out);
+/* Validates an ELF32 image held in 'data' (of 'size' bytes) and loads its
+ * PT_LOAD segments into the address space 'pd' (a page directory created with
+ * vmm_create_addrspace), allocating and mapping user frames as it goes. On
+ * success returns 0 and stores the entry point in *entry_out. Returns a
+ * negative value on any error. Must run with the kernel identity map reachable
+ * (the caller is normally the kernel/shell task). */
+int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *entry_out);
 
-/* Reads 'path' from the filesystem, loads it, spawns a ring-3 task at its entry
- * point and blocks until that task exits. Returns 0 on success, negative on
- * error (file missing, not a valid ELF, out of memory, ...). */
+/* Reads 'path' from disk, builds a fresh isolated address space, loads the
+ * program into it and creates a ring-3 task. Returns the new task id, or a
+ * negative value on error. Does NOT wait for the task to finish. */
+int elf_spawn(const char *path);
+
+/* Like elf_spawn, but blocks until the spawned task exits. Returns 0 on success
+ * (program ran and exited), negative on error. */
 int elf_exec(const char *path);
 
 #endif
