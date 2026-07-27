@@ -19,6 +19,32 @@ int ureadline(char *buf, int max) {
     return r;
 }
 
+int uspawn(const char *path) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_SPAWN), "b" (path));
+    return r;
+}
+
+int uwait(int pid) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_WAIT), "b" (pid));
+    return r;
+}
+
+int urun(const char *path) {
+    int pid = uspawn(path);
+    if (pid < 0) return pid;
+    return uwait(pid);
+}
+
+int ulistfiles(ufileinfo_t *out, int max) {
+    int r;
+    asm volatile("int $0x80"
+                 : "=a" (r)
+                 : "a" (SYS_LISTFILES), "b" (out), "c" (max));
+    return r;
+}
+
 int ugetpid(void) {
     int r;
     asm volatile("int $0x80" : "=a" (r) : "a" (SYS_GETPID));

@@ -30,17 +30,19 @@ typedef struct {
 static superblock_t sb;
 static int mounted = 0;
 
-static void fs_read_sb() {
+static int fs_read_sb() {
     uint8_t buf[SB_SECTORS * 512];
-    ata_read_sectors(0, SB_SECTORS, buf);
+    memory_set(buf, 0, sizeof(buf));
+    if (ata_read_sectors(0, SB_SECTORS, buf) != 0) return -1;
     memory_copy(buf, (uint8_t *) &sb, sizeof(superblock_t));
+    return 0;
 }
 
-static void fs_write_sb() {
+static int fs_write_sb() {
     uint8_t buf[SB_SECTORS * 512];
     memory_set(buf, 0, sizeof(buf));
     memory_copy((uint8_t *) &sb, buf, sizeof(superblock_t));
-    ata_write_sectors(0, SB_SECTORS, buf);
+    return ata_write_sectors(0, SB_SECTORS, buf);
 }
 
 void fs_format() {
@@ -53,16 +55,26 @@ void fs_format() {
         sb.entries[i].start_lba = DATA_START_LBA + i * SECTORS_PER_FILE;
         sb.entries[i].name[0] = '\0';
     }
-    fs_write_sb();
+    if (fs_write_sb() != 0) {
+        mounted = 0;
+        return;
+    }
     mounted = 1;
 }
 
 int fs_mount() {
     if (!init_ata()) return 0; /* no disk */
 
-    fs_read_sb();
+    if (fs_read_sb() != 0) {
+        /* First contact with a blank/VirtualBox disk can fail the first
+         * multi-sector-sized read; try once more after a format. */
+        fs_format();
+        if (!mounted) return 0;
+        return 1;
+    }
     if (sb.magic != FS_MAGIC) {
         fs_format();
+        if (!mounted) return 0;
     }
     mounted = 1;
     return 1;
@@ -104,11 +116,12 @@ int fs_write_file(const char *name, const uint8_t *data, uint32_t size) {
         uint32_t chunk = size - s * 512;
         if (chunk > 512) chunk = 512;
         memory_copy((uint8_t *) (data + s * 512), secbuf, (int) chunk);
-        ata_write_sectors(sb.entries[idx].start_lba + s, 1, secbuf);
+        if (ata_write_sectors(sb.entries[idx].start_lba + s, 1, secbuf) != 0)
+            return -1;
     }
 
     sb.entries[idx].size = size;
-    fs_write_sb();
+    if (fs_write_sb() != 0) return -1;
     return 0;
 }
 
@@ -118,12 +131,16 @@ int fs_read_file(const char *name, uint8_t *buf, uint32_t maxlen) {
     if (idx < 0) return -1;
 
     uint32_t size = sb.entries[idx].size;
+    /* A corrupt superblock (e.g. after a failed VirtualBox multi-sector write)
+     * can claim an absurd size; refuse anything past the real limit. */
+    if (size > FS_MAX_FILESIZE) return -1;
     if (size > maxlen) size = maxlen;
 
     uint32_t sectors = (size + 511) / 512;
     for (uint32_t s = 0; s < sectors; s++) {
         uint8_t secbuf[512];
-        ata_read_sectors(sb.entries[idx].start_lba + s, 1, secbuf);
+        if (ata_read_sectors(sb.entries[idx].start_lba + s, 1, secbuf) != 0)
+            return -1;
         uint32_t chunk = size - s * 512;
         if (chunk > 512) chunk = 512;
         memory_copy(secbuf, buf + s * 512, (int) chunk);
@@ -140,7 +157,7 @@ int fs_delete(const char *name) {
     sb.entries[idx].size = 0;
     sb.entries[idx].name[0] = '\0';
     if (sb.num_files > 0) sb.num_files--;
-    fs_write_sb();
+    if (fs_write_sb() != 0) return -1;
     return 0;
 }
 

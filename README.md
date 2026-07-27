@@ -26,7 +26,9 @@ A 32-bit x86 hobby operating system built from scratch in C and assembly. chaOS 
 | **Input** | Blocking `SYS_GETCHAR` / `SYS_READLINE` syscalls; foreground programs own the keyboard |
 | **Storage** | Simple persistent filesystem on `disk.img` (fixed directory, up to 32 files) |
 | **Userspace** | ELF32 loader, separate user build (`user/`), programs injected onto disk at build time |
-| **Shell** | Interactive command shell with filesystem, task, memory, and `exec` commands |
+| **Processes** | `SYS_SPAWN` / `SYS_WAIT`: programs can launch other programs and wait for them |
+| **Arguments** | Full `argc`/`argv`: command lines are delivered onto the new process's stack |
+| **Shell** | Kernel shell (`exec`, files, tasks, memory) plus `ush.elf`, a shell running entirely in ring 3 |
 
 ## Requirements
 
@@ -53,7 +55,8 @@ At the `>` prompt, try:
 ```
 help
 ls
-exec hello.elf
+exec greet.elf
+exec ush.elf
 tasks
 frames
 shutdown
@@ -103,6 +106,11 @@ Without the hard disk the OS still boots; disk-backed features (`ls`, `cat`,
 `exec`) will just report "no disk". Changes written to the converted `.vdi`
 do not sync back to `disk.img`.
 
+**VirtualBox tip:** attach the disk as an **IDE** drive (not SATA/AHCI). chaOS
+talks to the classic primary-master ATA ports (`0x1F0`). SATA controllers do
+not answer there, and a wrong attachment used to look like a mysterious
+page fault after `write`/`cat`.
+
 ## Writing user programs
 
 User programs live in `user/`. Each `.c` file becomes a freestanding ELF binary linked at **`0x40000000`** (1 GiB). Every process gets its own address space, so many programs can share that virtual address without colliding.
@@ -132,9 +140,30 @@ make run
 exec myprog.elf
 ```
 
-Available user library calls (`user/ulib.h`): `uprint`, `ugetchar`, `ureadline`, `ugetpid`, `usleep`, `uwritefile`, `ureadfile`, `uuptime`, `uexit`.
+Available user library calls (`user/ulib.h`): `uprint`, `ugetchar`, `ureadline`, `uspawn`, `uwait`, `urun`, `ulistfiles`, `ugetpid`, `usleep`, `uwritefile`, `ureadfile`, `uuptime`, `uexit`.
 
 `ureadline` blocks until Enter; the kernel echoes keystrokes and handles Backspace. Try `exec greet.elf` for a demo.
+
+### The user-space shell
+
+`exec ush.elf` starts a shell that is itself just a ring-3 program: it lists
+files, runs programs in the foreground (`run FILE ARGS...`) or background
+(`bg FILE`), and survives its children crashing — `run crash.elf` kills only
+the child. `exit` drops you back to the kernel shell.
+
+### Command-line arguments
+
+Anything after the program name is delivered as `argc`/`argv` (with `argv[0]`
+being the program name), both from the kernel shell and from ush:
+
+```
+exec args.elf hello world     # kernel shell
+run args.elf hello world      # inside ush
+```
+
+Programs simply declare `int main(int argc, char **argv)`; the kernel copies
+the command line onto the new process's stack and `crt0`'s `call main`
+produces a normal cdecl frame.
 
 Syscall numbers are defined in `kernel/syscall.h` and shared with userspace.
 
@@ -194,11 +223,11 @@ Kernel low memory is mapped **supervisor-only** in every address space. User pro
 6. Expanded syscalls, schedulable user tasks, fault isolation  
 7. **Per-process address spaces**, ELF loader, concurrent isolated programs  
 8. Keyboard input syscalls (interactive programs), screen scrollback, bootable ISO  
+9. `SYS_SPAWN`/`SYS_WAIT` process management, user-space shell (`ush.elf`)  
+10. Command-line arguments (`argc`/`argv`) for user programs  
 
 ## Possible next steps
 
-- Process management: spawn/wait syscalls, user-space shell
-- User-readable command-line arguments (`argc`/`argv`)
 - Higher-half kernel (map kernel at a fixed high address)
 - ELF shared libraries or dynamic linking
 - Virtual filesystem layers, larger disk support

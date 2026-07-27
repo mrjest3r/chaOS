@@ -50,9 +50,11 @@ typedef struct {
  * (the caller is normally the kernel/shell task). */
 int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *entry_out);
 
-/* Reads 'path' from disk, builds a fresh isolated address space, loads the
- * program into it and creates a ring-3 task. Returns the new task id, or a
- * negative value on error. Does NOT wait for the task to finish. */
+/* 'path' is a full command line: the first token is the ELF filename on disk,
+ * and the whole line becomes the program's argc/argv (argv[0] = the name).
+ * Builds a fresh isolated address space, loads the program and creates a
+ * ring-3 task. Returns the new task id, or a negative value on error. Does
+ * NOT wait for the task to finish. */
 int elf_spawn(const char *path);
 
 /* Like elf_spawn, but blocks until the spawned task exits. Returns 0 on success

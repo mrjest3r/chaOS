@@ -45,7 +45,9 @@ static void run_selftests() {
 }
 
 /* Exercises the filesystem and demonstrates persistence: a "bootcount" file
- * is read, incremented and written back on every boot. */
+ * is read, incremented and written back on every boot. Also does a longer
+ * write/read round-trip that forces a multi-sector superblock rewrite - the
+ * same path that VirtualBox used to corrupt under multi-sector PIO. */
 static void run_fs_selftest() {
     if (!fs_mount()) {
         serial_write("[test] fs: SKIP (no disk)\n");
@@ -75,7 +77,26 @@ static void run_fs_selftest() {
         check = (uint32_t) vbuf[0] | ((uint32_t) vbuf[1] << 8)
               | ((uint32_t) vbuf[2] << 16) | ((uint32_t) vbuf[3] << 24);
     }
-    serial_write(check == count ? "PASS\n" : "FAIL\n");
+    int ok = (check == count);
+
+    /* Longer payload: exercises sector-by-sector writes and the 3-sector
+     * superblock update that used to be a single multi-sector PIO command. */
+    char payload[256];
+    for (int i = 0; i < 255; i++) payload[i] = (char) ('A' + (i % 26));
+    payload[255] = '\0';
+    if (fs_write_file("vbtest.txt", (uint8_t *) payload, 255) != 0) ok = 0;
+
+    uint8_t rbuf[256];
+    memory_set(rbuf, 0, sizeof(rbuf));
+    int n = fs_read_file("vbtest.txt", rbuf, sizeof(rbuf) - 1);
+    if (n != 255) ok = 0;
+    else {
+        rbuf[n] = '\0';
+        for (int i = 0; i < 255; i++)
+            if (rbuf[i] != (uint8_t) payload[i]) { ok = 0; break; }
+    }
+
+    serial_write(ok ? "PASS\n" : "FAIL\n");
 
     char nbuf[16];
     int_to_ascii((int) count, nbuf);
@@ -159,6 +180,25 @@ static void run_input_selftest() {
     int rc = elf_exec("greet.elf");
     serial_write(rc == 0 ? "[test] input syscalls: PASS\n"
                          : "[test] input syscalls: FAIL\n");
+}
+
+/* AUTOTEST: command-line arguments. args.elf prints its argc/argv; the kernel
+ * builds them on the new process's stack from the exec command line. */
+static void run_args_selftest() {
+    serial_write("[test] argc/argv (args.elf alpha beta 42)...\n");
+    int rc = elf_exec("args.elf alpha beta 42");
+    serial_write(rc == 0 ? "[test] argv: PASS\n" : "[test] argv: FAIL\n");
+}
+
+/* AUTOTEST: the user-space shell. We script a whole session: list files, run
+ * a program in the foreground (SYS_SPAWN + SYS_WAIT), run one that crashes -
+ * ush must survive its child's death - and exit cleanly. */
+static void run_ush_selftest() {
+    serial_write("[test] user-space shell (scripted ush.elf session)...\n");
+    kbd_inject("ls\nrun spin.elf\nrun args.elf from ush\nrun crash.elf\nexit\n");
+    int rc = elf_exec("ush.elf");
+    serial_write(rc == 0 ? "[test] user shell: PASS\n"
+                         : "[test] user shell: FAIL\n");
 }
 
 /* AUTOTEST: scrollback. Print enough lines to push some into history, scroll
@@ -245,6 +285,8 @@ void kernel_main() {
     run_tasking_selftest();
     run_elf_selftest();
     run_input_selftest();
+    run_args_selftest();
+    run_ush_selftest();
     run_usermode_selftest();
     run_fault_isolation_selftest();
     run_scrollback_selftest();

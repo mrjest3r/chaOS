@@ -76,12 +76,69 @@ int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *ent
     return 0;
 }
 
+/* ---- argc / argv ----------------------------------------------------------
+ * The command line is copied into the top of the new process's stack (via the
+ * identity-mapped physical frame, since the process's address space is not
+ * active here) and laid out like this, growing downwards:
+ *
+ *   USER_STACK_TOP
+ *     - ARGS_AREA .. TOP   argument strings, then the argv[] pointer array
+ *     - ARGS_AREA - 4      argv       (user virtual address of argv[0] slot)
+ *     - ARGS_AREA - 8      argc       <- initial ESP
+ *
+ * crt0's 'call main' then produces a normal cdecl frame: main(argc, argv). */
+#define ARGS_AREA 256
+#define MAX_ARGS  8
+
+static uint32_t setup_user_args(uint32_t top_frame, const char *cmdline) {
+    uint8_t *kbase = (uint8_t *) (top_frame + PAGE_SIZE - ARGS_AREA); /* kernel view */
+    uint32_t vbase = USER_STACK_TOP - ARGS_AREA;                      /* user view   */
+
+    /* Strings go at the start of the area, the argv array at its end. */
+    char *strs = (char *) kbase;
+    int str_space = ARGS_AREA - (MAX_ARGS + 1) * 4;
+    uint32_t *argv_k = (uint32_t *) (kbase + str_space);
+    uint32_t  argv_v = vbase + (uint32_t) str_space;
+
+    int argc = 0, pos = 0, i = 0;
+    while (cmdline[i] && argc < MAX_ARGS) {
+        while (cmdline[i] == ' ') i++;
+        if (!cmdline[i]) break;
+        argv_k[argc++] = vbase + (uint32_t) pos;
+        while (cmdline[i] && cmdline[i] != ' ' && pos < str_space - 1)
+            strs[pos++] = cmdline[i++];
+        strs[pos++] = '\0';
+    }
+    argv_k[argc] = 0;
+
+    /* [argc][argv] just below the area; ESP points at argc. */
+    uint32_t *sp = (uint32_t *) (kbase - 8);
+    sp[0] = (uint32_t) argc;
+    sp[1] = argv_v;
+    return vbase - 8;
+}
+
 int elf_spawn(const char *path) {
+    /* First token of the command line is the program filename; the whole line
+     * (including the name, as argv[0]) becomes the program's arguments. */
+    int s = 0;
+    while (path[s] == ' ') s++;
+    const char *cmdline = path + s;
+
+    char name[FS_NAME_LEN];
+    int j = 0;
+    while (cmdline[j] && cmdline[j] != ' ' && j < FS_NAME_LEN - 1) {
+        name[j] = cmdline[j];
+        j++;
+    }
+    name[j] = '\0';
+    if (name[0] == '\0') return -105;
+
     /* Read the whole file into a temporary heap buffer. */
     uint8_t *buf = (uint8_t *) malloc(FS_MAX_FILESIZE);
     if (!buf) return -100;
 
-    int n = fs_read_file(path, buf, FS_MAX_FILESIZE);
+    int n = fs_read_file(name, buf, FS_MAX_FILESIZE);
     if (n < 0) {
         free(buf);
         return -101;
@@ -94,12 +151,15 @@ int elf_spawn(const char *path) {
         return -102;
     }
 
-    /* Map the ring-3 stack at the top of the user window. */
+    /* Map the ring-3 stack at the top of the user window. Remember the frame
+     * backing the topmost page: the argument block is written into it. */
     int ok = 1;
+    uint32_t top_frame = 0;
     for (int i = 0; i < USER_STACK_PAGES; i++) {
         uint32_t f = frame_alloc();
         if (!f) { ok = 0; break; }
         memory_set((uint8_t *) f, 0, PAGE_SIZE);
+        if (i == 0) top_frame = f;
         if (vmm_map(pd, USER_STACK_TOP - (uint32_t) (i + 1) * PAGE_SIZE, f,
                     PAGE_PRESENT | PAGE_RW | PAGE_USER) != 0) {
             ok = 0;
@@ -115,7 +175,9 @@ int elf_spawn(const char *path) {
         return rc;
     }
 
-    int id = task_create_user(entry, pd, USER_STACK_TOP);
+    uint32_t esp = setup_user_args(top_frame, cmdline);
+
+    int id = task_create_user(entry, pd, esp);
     if (id < 0) {
         vmm_destroy_addrspace(pd);
         return -104;

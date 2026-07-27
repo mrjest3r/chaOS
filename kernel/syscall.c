@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "task.h"
 #include "fs.h"
+#include "elf.h"
 #include "../cpu/isr.h"
 #include "../cpu/timer.h"
 #include "../drivers/screen.h"
@@ -46,6 +47,17 @@ static int sys_readline(char *buf, int max) {
 
     buf[len] = '\0';
     return len;
+}
+
+/* Block until the given task exits. Waiting on yourself would never return,
+ * so that is rejected. Waiting keeps interrupts enabled: the timer goes on
+ * scheduling everyone else (including the task being waited for). */
+static int sys_wait(int pid) {
+    if (pid < 0 || pid == task_current_id()) return -1;
+    while (task_alive(pid)) {
+        asm volatile("sti; hlt");
+    }
+    return 0;
 }
 
 static void syscall_handler(registers_t *r) {
@@ -95,6 +107,16 @@ static void syscall_handler(registers_t *r) {
 
         case SYS_READLINE:
             r->eax = (uint32_t) sys_readline((char *) r->ebx, (int) r->ecx);
+            break;
+
+        case SYS_SPAWN:
+            /* Loads the ELF into a brand-new isolated address space and
+             * schedules it; the caller keeps running concurrently. */
+            r->eax = (uint32_t) elf_spawn((const char *) r->ebx);
+            break;
+
+        case SYS_WAIT:
+            r->eax = (uint32_t) sys_wait((int) r->ebx);
             break;
 
         case SYS_EXIT:

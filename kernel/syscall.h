@@ -14,6 +14,8 @@
 #define SYS_SLEEP     8  /* ebx = ticks; block until they elapse          */
 #define SYS_GETCHAR   9  /* block until a key is typed -> eax = char      */
 #define SYS_READLINE  10 /* ebx = buf, ecx = max; echoing line read -> len */
+#define SYS_SPAWN     11 /* ebx = ELF filename -> eax = new pid or <0     */
+#define SYS_WAIT      12 /* ebx = pid; block until that task exits        */
 
 /* Registers the int 0x80 handler. */
 void syscall_init();
