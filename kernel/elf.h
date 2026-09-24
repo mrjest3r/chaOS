@@ -57,6 +57,11 @@ int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *ent
  * NOT wait for the task to finish. */
 int elf_spawn(const char *path);
 
+/* elf_spawn with the child's console redirected to pipes (GUI G4): it reads
+ * keys from 'stdin_pipe' and its SYS_PRINT output goes to 'stdout_pipe'
+ * (-1 = inherit). The child closes stdout_pipe when it exits. */
+int elf_spawn_io(const char *path, int stdin_pipe, int stdout_pipe);
+
 /* Like elf_spawn, but blocks until the spawned task exits. Returns 0 on success
  * (program ran and exited), negative on error. */
 int elf_exec(const char *path);

@@ -1,6 +1,8 @@
 #include "vmm.h"
 #include "paging.h"
+#include "memlayout.h"
 #include "../libc/mem.h"
+#include "../drivers/fb.h"
 
 /* ---- physical frame allocator -------------------------------------------
  * A flat bitmap over the [FRAME_POOL_START, FRAME_POOL_END) region: one bit per
@@ -56,10 +58,18 @@ uint32_t vmm_create_addrspace(void) {
     uint32_t *pd = (uint32_t *) pd_phys;      /* identity-mapped, so phys == virt */
     memory_set((uint8_t *) pd, 0, PAGE_SIZE);
 
-    /* Share the kernel's page tables (0..IDENTITY_MAP_MB). They are marked
+    /* Share the kernel's page tables (0..IDENTITY_MAP_MB), both the identity
+     * mapping and its higher-half alias at 0xC0000000. They are marked
      * supervisor-only, so ring-3 code cannot touch kernel memory, but ring-0
      * (syscalls, interrupts, the frame pool) works in every address space. */
-    for (int i = 0; i < KERNEL_PDES; i++) pd[i] = kernel_directory[i];
+    for (int i = 0; i < KERNEL_PDES; i++) {
+        pd[i] = kernel_directory[i];
+        pd[HIGH_PDE_INDEX + i] = kernel_directory[HIGH_PDE_INDEX + i];
+    }
+
+    /* Share the linear framebuffer mapping so kprint still works while this
+     * address space is loaded in CR3 (syscalls run on the user directory). */
+    fb_share_into(pd);
 
     return pd_phys;
 }
@@ -83,11 +93,33 @@ int vmm_map(uint32_t pd_phys, uint32_t vaddr, uint32_t paddr, uint32_t flags) {
     return 0;
 }
 
+void vmm_unmap_pde(uint32_t pd_phys, uint32_t vaddr) {
+    uint32_t *pd = (uint32_t *) pd_phys;
+    int i = (int) (vaddr >> 22);
+    if (i < KERNEL_PDES) return;
+    if (i >= (int) HIGH_PDE_INDEX && i < (int) (HIGH_PDE_INDEX + KERNEL_PDES)) return;
+    if (fb_is_shared_pde(i)) return;
+    if (!(pd[i] & PAGE_PRESENT)) return;
+
+    uint32_t *pt = (uint32_t *) (pd[i] & ~0xFFFu);
+    for (int j = 0; j < PAGE_ENTRIES; j++) {
+        if (pt[j] & PAGE_PRESENT) frame_free(pt[j] & ~0xFFFu);
+    }
+    frame_free(pd[i] & ~0xFFFu);
+    pd[i] = 0;
+}
+
 void vmm_destroy_addrspace(uint32_t pd_phys) {
     uint32_t *pd = (uint32_t *) pd_phys;
 
-    /* Skip the shared kernel PDEs; free only this process's private tables. */
+    /* Skip the shared kernel PDEs (identity map AND its higher-half alias);
+     * free only this process's private tables. Freeing the aliased kernel
+     * tables here would pull the kernel out from under every address space. */
     for (int i = KERNEL_PDES; i < PAGE_ENTRIES; i++) {
+        if (i >= (int) HIGH_PDE_INDEX && i < (int) (HIGH_PDE_INDEX + KERNEL_PDES))
+            continue;
+        if (fb_is_shared_pde(i))
+            continue;
         if (!(pd[i] & PAGE_PRESENT)) continue;
 
         uint32_t *pt = (uint32_t *) (pd[i] & ~0xFFFu);

@@ -10,6 +10,12 @@ void init_keyboard();
 #define KBD_FOCUS_PROGRAM 1
 
 void kbd_set_focus(int focus);
+int  kbd_focus_is_shell(void);
+
+/* F1 (G5): show the kernel console over a compositor without killing it.
+ * User FB draws (except INFO/RESTORE) are swallowed until F1 again. */
+int  kbd_console_override(void);
+void kbd_set_console_override(int on);
 
 /* ---- program input buffer -------------------------------------------------
  * Raw characters ('\n' for Enter, '\b' for Backspace) queued for user

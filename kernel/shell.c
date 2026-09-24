@@ -3,12 +3,13 @@
 #include "fs.h"
 #include "task.h"
 #include "elf.h"
-#include "../cpu/vmm.h"
+#include "../cpu/arch.h"
 #include "../drivers/screen.h"
+#include "../drivers/fb.h"
+#include "../drivers/mouse.h"
+#include "../drivers/idle.h"
 #include "../libc/string.h"
 #include "../libc/mem.h"
-#include "../cpu/ports.h"
-#include "../cpu/power.h"
 #include <stdint.h>
 
 /* ---- command queue ------------------------------------------------------ */
@@ -63,8 +64,91 @@ static void print_hex(uint32_t n) {
     kprint(buf);
 }
 
+/* ---- line editor -------------------------------------------------------- */
+#define EDIT_MAX 256
+static char edit_buf[EDIT_MAX];
+static int edit_len = 0;
+static int edit_caret = 0;
+
+static void edit_redraw(void) {
+    screen_redraw_input(edit_buf, edit_caret);
+}
+
 void shell_prompt() {
     kprint("> ");
+    edit_len = 0;
+    edit_caret = 0;
+    edit_buf[0] = '\0';
+    screen_mark_input_origin();
+    screen_caret_show(1);
+    edit_redraw();
+}
+
+void shell_input_char(char c) {
+    if (c < 32 || c > 126) return;
+    if (edit_len >= EDIT_MAX - 1) return;
+    for (int i = edit_len; i > edit_caret; i--)
+        edit_buf[i] = edit_buf[i - 1];
+    edit_buf[edit_caret] = c;
+    edit_len++;
+    edit_caret++;
+    edit_buf[edit_len] = '\0';
+    edit_redraw();
+}
+
+void shell_input_backspace(void) {
+    if (edit_caret <= 0) return;
+    for (int i = edit_caret - 1; i < edit_len - 1; i++)
+        edit_buf[i] = edit_buf[i + 1];
+    edit_len--;
+    edit_caret--;
+    edit_buf[edit_len] = '\0';
+    edit_redraw();
+}
+
+void shell_input_enter(void) {
+    screen_caret_show(0);
+    kprint("\n");
+    shell_submit(edit_buf);
+    edit_len = edit_caret = 0;
+    edit_buf[0] = '\0';
+}
+
+void shell_input_left(void) {
+    if (edit_caret > 0) {
+        edit_caret--;
+        edit_redraw();
+    }
+}
+
+void shell_input_right(void) {
+    if (edit_caret < edit_len) {
+        edit_caret++;
+        edit_redraw();
+    }
+}
+
+void shell_input_home(void) {
+    edit_caret = 0;
+    edit_redraw();
+}
+
+void shell_input_end(void) {
+    edit_caret = edit_len;
+    edit_redraw();
+}
+
+void shell_input_click(int px, int py) {
+    /* Mouse caret placement is FB-only; VGA uses arrow keys / Home / End. */
+    if (!fb_available()) return;
+    int col = 0;
+    int r = fb_console_click(px, py, &col);
+    if (r == 1) {
+        if (col < 0) col = 0;
+        if (col > edit_len) col = edit_len;
+        edit_caret = col;
+        edit_redraw();
+    }
 }
 
 static void cmd_help() {
@@ -83,10 +167,14 @@ static void cmd_help() {
     kprint("  frames      - show physical frame pool usage\n");
     kprint("  page        - request a page-aligned kmalloc\n");
     kprint("  fault       - trigger a page fault (will halt)\n");
+    kprint("  fbdemo      - draw shapes on the framebuffer (if active)\n");
+    kprint("  mouse       - print pointer x/y/buttons\n");
+    kprint("  doze        - blank the display until a key/mouse wakes it\n");
     kprint("  reboot      - restart the machine\n");
     kprint("  shutdown    - power off the machine\n");
     kprint("  end         - halt the CPU\n");
-    kprint("PgUp/PgDn scroll back through screen history.\n");
+    kprint("Arrows/Home/End move the text caret; click the input line to place it.\n");
+    kprint("PgUp/PgDn (or click above the prompt) scroll console history.\n");
 }
 
 static const char *task_state_name(task_state_t s) {
@@ -100,12 +188,17 @@ static const char *task_state_name(task_state_t s) {
 }
 
 static void cmd_tasks() {
+    /* Reap exited tasks before listing so finished/failed programs do not look
+     * like stuck processes. Use task_reap (not yield) so we never nest schedule
+     * with interrupts enabled. */
+    task_reap();
+
     kprint("Live tasks: ");
     print_dec((uint32_t) task_count());
     kprint("\n");
     for (int i = 0; i < task_max(); i++) {
         task_state_t st = task_get_state(i);
-        if (st == TASK_UNUSED) continue;
+        if (st == TASK_UNUSED || st == TASK_DEAD) continue;
         kprint("  task ");
         print_dec((uint32_t) i);
         if (i == 0) kprint(" (kernel/shell)");
@@ -257,6 +350,44 @@ static void cmd_fault() {
     (void) value;
 }
 
+static void cmd_fbdemo() {
+    if (!fb_available()) {
+        kprint("Framebuffer not active (boot stayed in VGA text mode).\n");
+        return;
+    }
+    int w = (int) fb_width();
+    int h = (int) fb_height();
+    /* Chaotic-ish demo blocks — preview of the future WM aesthetic. */
+    fb_fill_rect(w / 8, h / 3, w / 3, h / 4, 0x00CC3355);
+    fb_fill_rect(w / 3 + 20, h / 4 - 15, w / 4, h / 5, 0x0033AACC);
+    fb_fill_rect(w / 2, h / 2, w / 5, h / 6, 0x00DDAA22);
+    fb_draw_string(w / 8 + 8, h / 3 + 8, "summon: chaos", 0x00FFFFFF, 0x00CC3355);
+    fb_draw_string(w / 3 + 28, h / 4 - 7, "misaligned", 0x00000000, 0x0033AACC);
+    kprint("[fbdemo] drew demo rectangles on the LFB\n");
+}
+
+static void cmd_mouse() {
+    if (!mouse_available()) {
+        kprint("Mouse not available.\n");
+        return;
+    }
+    mouse_state_t m;
+    mouse_get(&m);
+    kprint("mouse x=");
+    print_dec((uint32_t) (m.x < 0 ? 0 : m.x));
+    kprint(" y=");
+    print_dec((uint32_t) (m.y < 0 ? 0 : m.y));
+    kprint(" buttons=");
+    print_dec(m.buttons);
+    kprint(" (L=1 R=2 M=4)\n");
+}
+
+static void cmd_doze(void) {
+    kprint("dozing (key or mouse to wake)...\n");
+    idle_doze();
+    kprint("awake.\n");
+}
+
 static void cmd_reboot() {
     kprint("Rebooting...\n");
     uint8_t status = 0x02;
@@ -266,6 +397,10 @@ static void cmd_reboot() {
 }
 
 void shell_execute(char *input) {
+    /* Commands may have been reached after a path that left IF clear (e.g. a
+     * task_exit that scheduled into us). Always run the shell with IRQs on. */
+    asm volatile("sti");
+
     if (input[0] == '\0') {
         shell_prompt();
         return;
@@ -301,11 +436,19 @@ void shell_execute(char *input) {
         cmd_frames();
     } else if (strcmp(input, "shutdown") == 0) {
         kprint("Powering off...\n");
+        /* After exec, leftover user tasks / CR3 made ACPI+hlt look like a crash. */
+        task_prepare_poweroff();
         power_off();
     } else if (strcmp(input, "page") == 0) {
         cmd_page();
     } else if (strcmp(input, "fault") == 0) {
         cmd_fault();
+    } else if (strcmp(input, "fbdemo") == 0) {
+        cmd_fbdemo();
+    } else if (strcmp(input, "mouse") == 0) {
+        cmd_mouse();
+    } else if (strcmp(input, "doze") == 0) {
+        cmd_doze();
     } else if (strcmp(input, "reboot") == 0) {
         cmd_reboot();
     } else if (strcmp(input, "end") == 0) {

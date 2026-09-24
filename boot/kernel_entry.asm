@@ -1,7 +1,75 @@
-global _start;
+; Boot stub: the very first kernel code, entered by the boot sector at
+; physical 0x10000 in 32-bit protected mode with paging OFF.
+;
+; The kernel proper is linked at 0xC0010000 (higher half), so before we can
+; call kernel_main we must build a temporary page directory of 4 MiB pages
+; that maps the first 16 MiB of physical memory twice:
+;
+;   virt 0x00000000.. -> phys 0x00000000..   (identity - this stub itself)
+;   virt 0xC0000000.. -> phys 0x00000000..   (higher half - the kernel)
+;
+; init_paging() later replaces this directory with the real one built from
+; 4 KiB page tables; it keeps exactly the same double mapping.
+;
+; The linker script (boot/kernel.ld) places this file's .text at 0x10000
+; (VMA == LMA) while everything else is linked high.
+
 [bits 32]
+[extern kernel_main]
+[extern __bss_start]
+[extern __bss_end]
+global _start
+
+PAGE_DIR  equ 0x8000        ; free page during boot, only used until init_paging
+PDE_4M    equ 0x83          ; present | rw | 4 MiB page size
+HIGH_PDE  equ 768           ; 0xC0000000 >> 22
+NUM_PDES  equ 4             ; 4 entries x 4 MiB = 16 MiB
 
 _start:
-    [extern kernel_main] ; Define calling point. Must have same name as kernel.c 'main' function
-    call kernel_main ; Calls the C function. The linker will know where it is placed in memory
+    ; Clear the boot page directory.
+    cld
+    mov edi, PAGE_DIR
+    xor eax, eax
+    mov ecx, 1024
+    rep stosd
+
+    ; Fill the identity and higher-half entries with 4 MiB pages.
+    xor ecx, ecx
+.fill:
+    mov eax, ecx
+    shl eax, 22             ; phys = index * 4 MiB
+    or  eax, PDE_4M
+    mov [PAGE_DIR + ecx*4], eax
+    mov [PAGE_DIR + (HIGH_PDE*4) + ecx*4], eax
+    inc ecx
+    cmp ecx, NUM_PDES
+    jb  .fill
+
+    ; CR4.PSE: enable 4 MiB pages.
+    mov eax, cr4
+    or  eax, 0x00000010
+    mov cr4, eax
+
+    mov eax, PAGE_DIR
+    mov cr3, eax
+
+    mov eax, cr0
+    or  eax, 0x80000000     ; CR0.PG
+    mov cr0, eax
+
+    ; Paging is on. This stub keeps executing through the identity mapping.
+    ; The loader only reads the file image (.text/.rodata/.data); .bss must be
+    ; cleared here rather than trusting the BIOS/emulator to hand us zero RAM.
+    mov edi, __bss_start
+    mov ecx, __bss_end
+    sub ecx, edi
+    shr ecx, 2
+    xor eax, eax
+    rep stosd
+
+    ; Switch the stack to its higher-half alias and enter the high kernel.
+    mov esp, 0xC0090000
+    mov eax, kernel_main
+    call eax
+
     jmp $

@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "fb.h"
 #include "../cpu/ports.h"
 #include "../libc/mem.h"
 #include "../kernel/kheap.h"
@@ -48,7 +49,10 @@ static void render_view() {
         int li = hist_count - view_offset + r; /* index into the combined list */
         uint8_t *dst = (uint8_t *) VIDEO_ADDRESS + r * ROW_BYTES;
         if (li < hist_count) {
-            int slot = (hist_head - hist_count + li + 2 * HISTORY_LINES) % HISTORY_LINES;
+            int slot = hist_head - hist_count + li;
+            /* C's % with a negative LHS is not floor-mod; normalize first. */
+            slot %= HISTORY_LINES;
+            if (slot < 0) slot += HISTORY_LINES;
             memory_copy(history + slot * ROW_BYTES, dst, ROW_BYTES);
         } else {
             memory_copy(saved_live + (li - hist_count) * ROW_BYTES, dst, ROW_BYTES);
@@ -57,6 +61,10 @@ static void render_view() {
 }
 
 void screen_scroll_view(int lines) {
+    if (fb_available()) {
+        fb_console_scroll_view(lines);
+        return;
+    }
     if (!history) return;
 
     int new_offset = view_offset + lines;
@@ -94,6 +102,13 @@ static void snap_to_live() {
  * If col, row, are negative, we will use the current offset
  */
 void kprint_at(char *message, int col, int row) {
+    if (fb_available()) {
+        /* Soft FB console ignores col/row for now (always appends). */
+        (void) col; (void) row;
+        fb_console_write(message);
+        return;
+    }
+
     snap_to_live();
 
     /* Set cursor if col/row are negative */
@@ -123,11 +138,101 @@ void kprint(char *message) {
 }
 
 void kprint_backspace() {
+    if (fb_available()) {
+        fb_console_putc('\b');
+        return;
+    }
     snap_to_live();
     int offset = get_cursor_offset()-2;
     int row = get_offset_row(offset);
     int col = get_offset_col(offset);
     print_char(0x08, col, row, WHITE_ON_BLACK);
+}
+
+/* VGA input-line origin (column after "> "). FB path uses fb_console_*. */
+static int vga_input_col = 0;
+static int vga_input_row = 0;
+
+void screen_mark_input_origin(void) {
+    if (fb_available()) {
+        fb_console_mark_input_origin();
+        return;
+    }
+    snap_to_live();
+    int offset = get_cursor_offset();
+    vga_input_row = get_offset_row(offset);
+    vga_input_col = get_offset_col(offset);
+}
+
+void screen_caret_show(int on) {
+    if (fb_available()) {
+        fb_console_caret_show(on);
+        return;
+    }
+    (void) on; /* VGA uses the hardware cursor via screen_redraw_input. */
+}
+
+void screen_redraw_input(const char *line, int caret) {
+    if (fb_available()) {
+        fb_console_redraw_input(line, caret);
+        return;
+    }
+
+    /* Mid-line edit must rewrite the whole input — kprint_backspace only
+     * erases the last glyph and caused "hello"→visual "hel" / buffer "llo". */
+    snap_to_live();
+    if (!line) line = "";
+    int len = 0;
+    while (line[len]) len++;
+    if (caret < 0) caret = 0;
+    if (caret > len) caret = len;
+
+    uint8_t *vidmem = (uint8_t *) VIDEO_ADDRESS;
+    int clear_n = MAX_COLS - vga_input_col;
+    if (clear_n < len + 1) clear_n = len + 1;
+    if (clear_n > MAX_COLS * 2) clear_n = MAX_COLS * 2;
+
+    int col = vga_input_col;
+    int row = vga_input_row;
+    for (int i = 0; i < clear_n; i++) {
+        if (row >= MAX_ROWS) break;
+        int off = get_offset(col, row);
+        vidmem[off] = ' ';
+        vidmem[off + 1] = WHITE_ON_BLACK;
+        col++;
+        if (col >= MAX_COLS) {
+            col = 0;
+            row++;
+        }
+    }
+
+    col = vga_input_col;
+    row = vga_input_row;
+    for (int i = 0; i < len; i++) {
+        if (row >= MAX_ROWS) break;
+        char c = line[i];
+        if (c < 32 || c > 126) c = '?';
+        int off = get_offset(col, row);
+        vidmem[off] = (uint8_t) c;
+        vidmem[off + 1] = WHITE_ON_BLACK;
+        col++;
+        if (col >= MAX_COLS) {
+            col = 0;
+            row++;
+        }
+    }
+
+    int cc = vga_input_col + caret;
+    int cr = vga_input_row;
+    while (cc >= MAX_COLS) {
+        cc -= MAX_COLS;
+        cr++;
+    }
+    if (cr >= MAX_ROWS) {
+        cr = MAX_ROWS - 1;
+        cc = MAX_COLS - 1;
+    }
+    set_cursor_offset(get_offset(cc, cr));
 }
 
 
@@ -213,6 +318,10 @@ void set_cursor_offset(int offset) {
 }
 
 void clear_screen() {
+    if (fb_available()) {
+        fb_console_clear();
+        return;
+    }
     snap_to_live();
     int screen_size = MAX_COLS * MAX_ROWS;
     int i;

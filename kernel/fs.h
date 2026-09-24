@@ -32,4 +32,13 @@ int fs_delete(const char *name);
 /* Fill 'out' with info for up to 'max' files. Returns the number written. */
 int fs_list(fs_fileinfo_t *out, int max);
 
+/* Returns 1 if a file with this name exists, 0 otherwise. */
+int fs_exists(const char *name);
+
+/* Size in bytes of an existing file, or -1. */
+int fs_size(const char *name);
+
+/* 1 when the filesystem lives in RAM (no IDE disk found; nothing persists). */
+int fs_is_ram(void);
+
 #endif

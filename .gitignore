@@ -4,6 +4,9 @@
 *.elf
 *.dis
 *.iso
+*.flp
+*.vdi
+chaos-disk.vdi
 isodir/
 os-image.bin
 

@@ -1,6 +1,8 @@
 #ifndef IDT_H
 #define IDT_H
 
+/* cpu/-internal: IDT gate table. Kernel/drivers use isr.h / arch.h instead. */
+
 #include <stdint.h>
 
 /* Segment selectors */

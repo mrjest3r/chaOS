@@ -14,17 +14,16 @@ int init_serial() {
     port_byte_out(COM1 + 2, 0xC7); /* Enable FIFO, clear, 14-byte threshold */
     port_byte_out(COM1 + 4, 0x0B); /* IRQs enabled, RTS/DSR set */
 
-    /* Loopback test: write a byte and check we read it back. */
+    /* Loopback test. VirtualBox UART-to-file often fails this; still enable
+     * the port so COM1 logging works under VBoxManage --uartmode1 file. */
     port_byte_out(COM1 + 4, 0x1E);
     port_byte_out(COM1 + 0, 0xAE);
-    if (port_byte_in(COM1 + 0) != 0xAE) {
-        return 1;
-    }
+    int loop_ok = (port_byte_in(COM1 + 0) == 0xAE);
 
     /* Back to normal (non-loopback) operation. */
     port_byte_out(COM1 + 4, 0x0F);
     initialized = 1;
-    return 0;
+    return loop_ok ? 0 : 1;
 }
 
 static int is_transmit_empty() {

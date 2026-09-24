@@ -2,6 +2,7 @@
 #include "idt.h"
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/mouse.h"
 #include "../libc/string.h"
 #include "../kernel/task.h"
 #include "timer.h"
@@ -176,4 +177,6 @@ void irq_install() {
     init_timer(50);
     /* IRQ1: keyboard */
     init_keyboard();
+    /* IRQ12: PS/2 mouse (cursor attaches later after fb_init) */
+    init_mouse();
 }

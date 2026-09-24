@@ -1,5 +1,6 @@
 #include "paging.h"
 #include "vmm.h"
+#include "memlayout.h"
 #include "isr.h"
 #include "../libc/mem.h"
 #include "../libc/string.h"
@@ -73,6 +74,10 @@ void init_paging() {
             pt[i] = frame | PAGE_PRESENT | PAGE_RW;
         }
         kernel_directory[t] = ((uint32_t) pt) | PAGE_PRESENT | PAGE_RW;
+        /* Alias the same tables in the higher half: the kernel is linked at
+         * 0xC0000000 + phys, so it must stay mapped when this directory
+         * replaces the boot stub's temporary one. */
+        kernel_directory[HIGH_PDE_INDEX + t] = kernel_directory[t];
     }
 
     register_interrupt_handler(14, page_fault_handler);

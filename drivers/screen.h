@@ -17,6 +17,11 @@ void kprint_at(char *message, int col, int row);
 void kprint(char *message);
 void kprint_backspace();
 
+/* Line-editor helpers (VGA text or FB soft console). */
+void screen_mark_input_origin(void);
+void screen_redraw_input(const char *line, int caret);
+void screen_caret_show(int on);
+
 /* ---- scrollback -----------------------------------------------------------
  * Lines that scroll off the top are kept in a heap-allocated history buffer.
  * PgUp/PgDn (see the keyboard driver) move a viewport over that history;

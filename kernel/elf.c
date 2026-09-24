@@ -2,8 +2,7 @@
 #include "fs.h"
 #include "kheap.h"
 #include "task.h"
-#include "../cpu/vmm.h"
-#include "../cpu/paging.h"
+#include "../cpu/arch.h"
 #include "../libc/mem.h"
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
@@ -119,6 +118,10 @@ static uint32_t setup_user_args(uint32_t top_frame, const char *cmdline) {
 }
 
 int elf_spawn(const char *path) {
+    return elf_spawn_io(path, -1, -1);
+}
+
+int elf_spawn_io(const char *path, int stdin_pipe, int stdout_pipe) {
     /* First token of the command line is the program filename; the whole line
      * (including the name, as argv[0]) becomes the program's arguments. */
     int s = 0;
@@ -133,6 +136,11 @@ int elf_spawn(const char *path) {
     }
     name[j] = '\0';
     if (name[0] == '\0') return -105;
+
+    /* Fail fast before touching the heap / address spaces. A missing file used
+     * to still malloc a 32 KiB buffer; under memory pressure that could leave
+     * the kernel in a bad state before the obvious error was reported. */
+    if (!fs_exists(name)) return -101;
 
     /* Read the whole file into a temporary heap buffer. */
     uint8_t *buf = (uint8_t *) malloc(FS_MAX_FILESIZE);
@@ -182,6 +190,9 @@ int elf_spawn(const char *path) {
         vmm_destroy_addrspace(pd);
         return -104;
     }
+    /* Runs before the child can be scheduled: callers reach here from the
+     * syscall gate (IF=0) or from the kernel shell, which never redirects. */
+    if (stdin_pipe >= 0 || stdout_pipe >= 0) task_set_io(id, stdin_pipe, stdout_pipe);
     return id;
 }
 
@@ -202,5 +213,10 @@ int elf_exec(const char *path) {
     while (task_alive(id)) asm volatile("hlt");
 
     kbd_set_focus(KBD_FOCUS_SHELL);
+    /* Reap DEAD slot and ensure we are back on the kernel page directory. */
+    task_reap();
+    if (kernel_directory) {
+        load_page_directory(kernel_directory);
+    }
     return 0;
 }

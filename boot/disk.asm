@@ -1,9 +1,9 @@
-; Load 'dh' sectors starting at LBA 1 (the sector after the boot sector) into
-; memory beginning at ES:0000. We read ONE sector per BIOS call, converting the
-; linear sector number to CHS each time - a single multi-sector int 13h read is
-; not reliable once it must cross a cylinder boundary. After each sector ES is
-; advanced by 0x20 paragraphs (512 bytes) so BX can stay 0 and a large kernel
-; can be loaded without BX ever overflowing.
+; Load CX sectors starting at LBA AX into memory beginning at ES:0000, from
+; BIOS drive DL. We read ONE sector per BIOS call, converting the linear sector
+; number to CHS each time - a single multi-sector int 13h read is not reliable
+; once it must cross a cylinder boundary. After each sector ES is advanced by
+; 0x20 paragraphs (512 bytes) so BX can stay 0 and a large image can be loaded
+; without BX ever overflowing.
 ;
 ; Floppy geometry (1.44 MiB): 18 sectors/track, 2 heads.
 
@@ -13,14 +13,14 @@ NUM_HEADS         equ 2
 disk_load:
     pusha
     mov [dl_drive], dl
-    mov [total_sectors], dh
-    mov byte [done_cnt], 0
-    mov word [cur_lba], 1
+    mov [total_sectors], cx
+    mov [cur_lba], ax
+    mov word [done_cnt], 0
     xor bx, bx                 ; every sector is read to ES:0000
 
 .next_sector:
-    mov al, [done_cnt]
-    cmp al, [total_sectors]
+    mov ax, [done_cnt]
+    cmp ax, [total_sectors]
     jae .finish
 
     ; --- Convert cur_lba -> CHS ---
@@ -47,7 +47,7 @@ disk_load:
     mov es, ax
 
     inc word [cur_lba]
-    inc byte [done_cnt]
+    inc word [done_cnt]
     jmp .next_sector
 
 .finish:
@@ -64,8 +64,8 @@ DISK_ERROR    db "Disk read error", 0
 
 ; disk_load scratch variables
 dl_drive      db 0
-total_sectors db 0
-done_cnt      db 0
+total_sectors dw 0
+done_cnt      dw 0
 cur_lba       dw 0
 spt           dw SECTORS_PER_TRACK
 num_heads     dw NUM_HEADS

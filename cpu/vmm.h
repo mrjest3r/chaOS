@@ -22,6 +22,15 @@
 #define USER_STACK_PAGES 4            /* 16 KiB user stack                    */
 #define USER_PROG_LIMIT  (USER_STACK_TOP - USER_STACK_PAGES * 0x1000u)
 
+/* ---- surfaces (GUI G2) -----------------------------------------------------
+ * Pixel buffers handed to ring 3 by SYS_SURFACE. Each task owns up to
+ * SURF_SLOTS of them; slot n lives in its own 4 MiB page-directory entry at
+ * SURF_BASE + n*SURF_SLOT_BYTES so freeing a surface can drop the whole table. */
+#define SURF_BASE        0x50000000u
+#define SURF_SLOT_BYTES  0x00400000u  /* 4 MiB: up to 1024x1024x4            */
+#define SURF_SLOTS       4
+#define SURF_END         (SURF_BASE + SURF_SLOTS * SURF_SLOT_BYTES)
+
 /* Zeroes the frame bitmap (all frames free). Call once after paging is up. */
 void vmm_init(void);
 
@@ -49,5 +58,10 @@ void vmm_destroy_addrspace(uint32_t pd_phys);
  * space 'pd_phys'. Allocates a page table from the frame pool if needed.
  * Returns 0 on success, -1 if out of frames. */
 int vmm_map(uint32_t pd_phys, uint32_t vaddr, uint32_t paddr, uint32_t flags);
+
+/* Tear down one whole 4 MiB page-directory entry: free every present frame in
+ * its table, free the table, clear the entry. Never touches shared kernel /
+ * LFB entries. The caller reloads CR3 if this directory is active. */
+void vmm_unmap_pde(uint32_t pd_phys, uint32_t vaddr);
 
 #endif
