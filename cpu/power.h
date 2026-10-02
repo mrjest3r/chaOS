@@ -7,6 +7,9 @@
  * Halts if none of the methods are available. */
 void power_off();
 
+/* Pulse the keyboard-controller reset line, then halt. */
+void power_reboot(void);
+
 /* Exits QEMU when the 'isa-debug-exit' device is present (port 0xF4).
  * QEMU terminates with exit status (code << 1) | 1. Used by automated tests
  * so the emulator stops on its own instead of needing to be killed. */

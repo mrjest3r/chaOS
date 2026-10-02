@@ -26,6 +26,7 @@
 #define ATA_CMD_IDENTIFY 0xEC
 
 static int disk_present = 0;
+static uint32_t disk_sectors = 0;
 
 /* ~400ns settle delay: read the alternate status register a few times.
  * (Alt status does NOT clear a pending IRQ - that is intentional here.) */
@@ -93,9 +94,11 @@ int init_ata() {
         return 0;
     }
 
-    /* Consume the 256-word IDENTIFY block. */
-    for (int i = 0; i < 256; i++) port_word_in(ATA_DATA);
+    /* Words 60-61 are the LBA28 sector count. The rest is unused. */
+    uint16_t ident[256];
+    for (int i = 0; i < 256; i++) ident[i] = port_word_in(ATA_DATA);
     ata_ack();
+    disk_sectors = (uint32_t) ident[60] | ((uint32_t) ident[61] << 16);
 
     disk_present = 1;
     return 1;
@@ -181,4 +184,8 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const uint8_t *buffer) {
     uint8_t st = ata_ack();
     if (st & (ATA_SR_ERR | ATA_SR_DF)) return -1;
     return 0;
+}
+
+uint32_t ata_sector_count(void) {
+    return disk_sectors;
 }

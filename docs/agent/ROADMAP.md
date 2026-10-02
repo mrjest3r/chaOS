@@ -137,9 +137,17 @@ before P5.1 targets the SDK at a final ABI. G4+ is userspace only.
 
 ### G6 Deck identity
 - Boot into compositor; palette per `attune` mode; toolbar of verbs.
+- Done as: interactive `kernel_main` execs `chaoswm.elf` when the LFB is up
+  (`[boot] desk` on COM1; `q` returns to the kernel shell; F1 still overlays).
+  Shared `attune` file (`user/attune.h`) drives ush + chaoswm palettes
+  (deck / notes / code). Top bar is a clickable verb toolbar; `a` cycles
+  modes. `run_desk_selftest` checks the file round-trip.
 
 ### G7 Freeze for hardware
 - Pick the board's VBE mode; record in `BRINGUP.md`.
+- Done as: **800×600×32** (VBE 0x115 + LFB) is the frozen desk mode.
+  Fallbacks 1024×768×32 / 640×480×32 then VGA text. Recorded in
+  `docs/agent/BRINGUP.md` § G7. ABI unchanged.
 
 ---
 

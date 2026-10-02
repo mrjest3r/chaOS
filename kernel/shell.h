@@ -2,6 +2,8 @@
 #define SHELL_H
 
 void shell_prompt();
+/* Draw the prompt once if the console has never shown one (F1 overlay). */
+void shell_ensure_prompt(void);
 void shell_execute(char *input);
 
 /* Called from the keyboard IRQ when the user presses Enter. Queues the line for

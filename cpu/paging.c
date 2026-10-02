@@ -1,6 +1,7 @@
 #include "paging.h"
 #include "vmm.h"
 #include "memlayout.h"
+#include "memsize.h"
 #include "isr.h"
 #include "../libc/mem.h"
 #include "../libc/string.h"
@@ -12,6 +13,9 @@
  * (a virtual address) is also its physical address, which is exactly what
  * the CPU wants in CR3 and in the directory entries. */
 uint32_t *kernel_directory = 0;
+static uint32_t mapped_bytes;
+
+uint32_t mem_mapped_bytes(void) { return mapped_bytes; }
 
 /* Fires on interrupt 14. The faulting linear address lives in CR2 and the
  * error code (already in the registers struct) describes the fault. */
@@ -60,32 +64,41 @@ void init_paging() {
         kernel_directory[i] = PAGE_RW;
     }
 
-    /* Identity map the first IDENTITY_MAP_MB MiB: virtual addr == physical addr.
-     * One page table covers 4 MiB, so we allocate several. Every page is marked
-     * supervisor-only (no PAGE_USER): ring-3 tasks run in their own address
-     * spaces at USER_BASE and cannot reach kernel memory here. The kernel keeps
-     * full access to this region (including the physical frame pool) in ring 0
-     * from any address space, because these tables are shared into every one. */
-    int num_tables = IDENTITY_MAP_MB / 4; /* 4 MiB per page table */
+    /* Identity-map installed RAM, capped at 1 GiB, in 4 MiB chunks. Tables
+     * live at 4 MiB, inside the 16 MiB the boot stub already maps. The
+     * higher-half alias stays 16 MiB so it does not cover the framebuffer. */
+    uint32_t bytes = mem_installed_bytes();
+    bytes &= ~0x3FFFFFu;
+    if (bytes < (uint32_t) HIGH_ALIAS_MB * 0x100000u)
+        bytes = (uint32_t) HIGH_ALIAS_MB * 0x100000u;
+    if (bytes > (uint32_t) MEM_CAP_MB * 0x100000u)
+        bytes = (uint32_t) MEM_CAP_MB * 0x100000u;
+    mapped_bytes = bytes;
+
+    int num_tables = (int) (bytes / (4u * 1024u * 1024u));
+    int alias_tables = HIGH_ALIAS_MB / 4;
+    uint32_t pt_at = 0x00400000u;
     for (int t = 0; t < num_tables; t++) {
-        uint32_t *pt = (uint32_t *) kmalloc(PAGE_ENTRIES * sizeof(uint32_t), 1, &phys);
+        uint32_t *pt = (uint32_t *) pt_at;
+        pt_at += PAGE_SIZE;
         for (int i = 0; i < PAGE_ENTRIES; i++) {
-            uint32_t frame = ((uint32_t) t * PAGE_ENTRIES + i) * PAGE_SIZE;
+            uint32_t frame = ((uint32_t) t * PAGE_ENTRIES + (uint32_t) i) * PAGE_SIZE;
             pt[i] = frame | PAGE_PRESENT | PAGE_RW;
         }
         kernel_directory[t] = ((uint32_t) pt) | PAGE_PRESENT | PAGE_RW;
-        /* Alias the same tables in the higher half: the kernel is linked at
-         * 0xC0000000 + phys, so it must stay mapped when this directory
-         * replaces the boot stub's temporary one. */
-        kernel_directory[HIGH_PDE_INDEX + t] = kernel_directory[t];
+        if (t < alias_tables)
+            kernel_directory[HIGH_PDE_INDEX + t] = kernel_directory[t];
     }
+
+    uint32_t pool = pt_at;
+    uint32_t bitmap_bytes = ((bytes - pool) / PAGE_SIZE + 31) / 32 * 4;
+    uint32_t *bitmap = (uint32_t *) pool;
+    pool += (bitmap_bytes + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    vmm_set_kernel_pdes((uint32_t) num_tables, (uint32_t) alias_tables);
+    vmm_set_pool(pool, bytes, bitmap);
 
     register_interrupt_handler(14, page_fault_handler);
 
     load_page_directory(kernel_directory);
     enable_paging();
-
-    /* The physical frame allocator manages memory above the identity-mapped
-     * kernel region; it is what backs per-process address spaces. */
-    vmm_init();
 }

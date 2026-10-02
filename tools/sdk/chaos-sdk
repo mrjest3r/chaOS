@@ -1,0 +1,81 @@
+#!/bin/bash
+# chaOS host SDK (roadmap P5.1).
+# One C file in, one chaOS ELF on disk.img out. No compiler runs on the deck.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$ROOT"
+
+if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "usage: make sdk SRC=prog.c"
+    echo "       bash tools/sdk/chaos-sdk prog.c [name.elf]"
+    exit 1
+fi
+
+SRC=$1
+if [[ ! -f "$SRC" ]]; then
+    echo "sdk: no such file: $SRC" >&2
+    exit 1
+fi
+
+OUTNAME=${2:-}
+if [[ -z "$OUTNAME" ]]; then
+    base=$(basename "$SRC")
+    OUTNAME=${base%.c}.elf
+fi
+OUTNAME=$(basename "$OUTNAME")
+if [[ "$OUTNAME" != *.elf ]]; then
+    echo "sdk: output name must end in .elf" >&2
+    exit 1
+fi
+if [[ ${#OUTNAME} -ge 24 ]]; then
+    echo "sdk: '$OUTNAME' is too long. A disk name holds 23 characters." >&2
+    exit 1
+fi
+
+CROSS=${CROSS:-/usr/local/i386elfgcc/bin}
+CC="$CROSS/i386-elf-gcc"
+LD="$CROSS/i386-elf-ld"
+if [[ ! -x "$CC" ]]; then
+    CC=$(command -v i386-elf-gcc || true)
+    LD=$(command -v i386-elf-ld || true)
+fi
+if [[ ! -x "$CC" || ! -x "$LD" ]]; then
+    echo "sdk: i386-elf-gcc not found. Set CROSS to its bin directory." >&2
+    exit 1
+fi
+
+UFLAGS=(
+    -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie
+    -fno-asynchronous-unwind-tables -m32 -Wall -Wextra
+    -I"$ROOT/user"
+)
+
+WORK=$(mktemp -d /tmp/chaos-sdk.XXXXXX)
+MKFS=$(mktemp /tmp/chaos-mkfs.XXXXXX)
+cleanup() { rm -rf "$WORK"; rm -f "$MKFS"; }
+trap cleanup EXIT
+
+nasm "$ROOT/user/crt0.asm" -f elf -o "$WORK/crt0.o"
+"$CC" "${UFLAGS[@]}" -c "$ROOT/user/ulib.c" -o "$WORK/ulib.o"
+"$CC" "${UFLAGS[@]}" -c "$ROOT/user/ugfx.c" -o "$WORK/ugfx.o"
+"$CC" "${UFLAGS[@]}" -c "$ROOT/user/utext.c" -o "$WORK/utext.o"
+"$CC" "${UFLAGS[@]}" -c "$SRC" -o "$WORK/prog.o"
+"$LD" -T "$ROOT/user/linker.ld" -o "$WORK/$OUTNAME" \
+    "$WORK/crt0.o" "$WORK/prog.o" "$WORK/ulib.o" "$WORK/ugfx.o" "$WORK/utext.o"
+
+MAX=8388608
+SZ=$(stat -c%s "$WORK/$OUTNAME")
+if [[ "$SZ" -gt "$MAX" ]]; then
+    echo "sdk: $OUTNAME is $SZ bytes. Each disk file holds at most 1 MiB." >&2
+    exit 1
+fi
+
+if [[ ! -f "$ROOT/disk.img" ]]; then
+    truncate -s 16M "$ROOT/disk.img"
+fi
+
+cc -O2 -Wall -o "$MKFS" "$ROOT/tools/mkfs.c"
+chmod +x "$MKFS"
+"$MKFS" "$ROOT/disk.img" "$WORK/$OUTNAME"
+echo "sdk: $OUTNAME ($SZ bytes) is on disk.img. From the terminal: summon $OUTNAME"

@@ -201,6 +201,76 @@ void uprint_dec(uint32_t v) {
     uprint(out);
 }
 
+int ulistprocs(uproc_t *out, int max) {
+    int r;
+    asm volatile("int $0x80"
+                 : "=a" (r)
+                 : "a" (SYS_PROCS), "b" (out), "c" (max));
+    return r;
+}
+
+int upsctl(int pid, int op) {
+    int r;
+    asm volatile("int $0x80"
+                 : "=a" (r)
+                 : "a" (SYS_PSCTL), "b" (pid), "c" (op));
+    return r;
+}
+
+int upower(int op) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_POWER), "b" (op));
+    return r;
+}
+
+int uclock(uclock_t *out) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_CLOCK), "b" (out));
+    return r;
+}
+
+uint32_t ubrk(uint32_t addr) {
+    uint32_t r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_BRK), "b" (addr));
+    return r;
+}
+
+typedef struct heap_block {
+    uint32_t size;
+    uint32_t free;
+    struct heap_block *next;
+} heap_block_t;
+
+static heap_block_t *heap_head;
+
+void *umalloc(uint32_t n) {
+    if (n == 0) n = 1;
+    n = (n + 7u) & ~7u;
+    for (heap_block_t *b = heap_head; b; b = b->next) {
+        if (b->free && b->size >= n) {
+            b->free = 0;
+            return b + 1;
+        }
+    }
+    uint32_t cur = ubrk(0);
+    if (cur == (uint32_t) -1) return 0;
+    uint32_t need = (uint32_t) sizeof(heap_block_t) + n;
+    uint32_t next = ubrk(cur + need);
+    if (next == (uint32_t) -1 || next < cur + need) return 0;
+    heap_block_t *b = (heap_block_t *) cur;
+    b->size = n;
+    b->free = 0;
+    b->next = heap_head;
+    heap_head = b;
+    return b + 1;
+}
+
+void ufree(void *p) {
+    if (!p) return;
+    heap_block_t *b = (heap_block_t *) p - 1;
+    b->free = 1;
+}
+
 void uexit(void) {
     asm volatile("int $0x80" : : "a" (SYS_EXIT));
     for (;;) { }

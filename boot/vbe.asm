@@ -18,7 +18,7 @@ vbe_init:
     mov cx, 8
     rep stosw
 
-    ; Prefer 800x600x32, then 1024x768x32, then 640x480x32.
+    ; Prefer 800x600x32 (G7), then 1024x768x32, then 640x480x32.
     mov cx, 0x0115
     call .try
     jc .out

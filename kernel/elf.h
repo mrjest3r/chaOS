@@ -39,6 +39,9 @@ typedef struct {
 #define ET_EXEC     2
 #define EM_386      3
 #define PT_LOAD     1
+#define PF_X        1
+#define PF_W        2
+#define PF_R        4
 #define ELFCLASS32  1
 #define ELFDATA2LSB 1
 

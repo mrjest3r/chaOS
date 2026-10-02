@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "event_user.h"
+#include "proc_user.h"
 
 typedef enum {
     TASK_UNUSED = 0, /* free slot                                   */
@@ -10,13 +11,16 @@ typedef enum {
     TASK_RUNNING,    /* currently on the CPU                        */
     TASK_SLEEPING,   /* blocked until 'sleep_until' ticks           */
     TASK_DEAD,       /* finished; slot reclaimable                  */
-    TASK_BLOCKED     /* in SYS_EVENT_WAIT; woken by an event push or
+    TASK_BLOCKED,    /* in SYS_EVENT_WAIT; woken by an event push or
                         by 'sleep_until' (0 = no timeout)           */
+    TASK_FROZEN      /* suspended; the scheduler will not run it    */
 } task_state_t;
+
+#define TASK_NAME_LEN 24
 
 /* Per-task input event queue (GUI G3). Producer is the keyboard / mouse IRQ,
  * consumer is task_event_wait; count = ev_head - ev_tail. */
-#define TASK_EVQ_SIZE 32
+#define TASK_EVQ_SIZE 64
 
 /* One SYS_SURFACE pixel buffer mapped into a user task (GUI G2). */
 typedef struct {
@@ -34,8 +38,10 @@ typedef struct task {
     uint32_t user_stack_top;   /* ring-3 stack top (user vaddr; 0 if kernel) */
     void (*entry)();           /* task entry point                           */
     int id;
+    int parent;                /* spawning slot, or -1                       */
     int is_user;               /* 1 = runs in ring 3                         */
     task_state_t state;
+    char name[TASK_NAME_LEN];
     volatile uint32_t counter; /* activity counter (demo/inspection)         */
     volatile uint32_t sleep_until;
     task_surface_t surf[TASK_MAX_SURF];
@@ -48,6 +54,8 @@ typedef struct task {
      * compositor). */
     int stdin_pipe, stdout_pipe;
     int io_owner;
+    uint32_t brk_base;         /* first byte past the loaded image, page aligned */
+    uint32_t brk;              /* current heap end (SYS_BRK)                     */
 } task_t;
 
 /* Registers the currently-running kernel context as task 0 (the idle/shell). */
@@ -91,6 +99,20 @@ int task_current_id();
 task_state_t task_get_state(int id);
 int task_alive(int id);           /* state is neither UNUSED nor DEAD          */
 
+/* Snapshot of live tasks (kernel threads included). Returns the count
+ * written, at most 'max'. Reaps DEAD slots first. */
+int task_list(uproc_t *out, int max);
+void task_set_name(int id, const char *name);
+/* Point a live task at another slot. parent -1 clears it. */
+int task_set_parent(int id, int parent);
+
+/* User tasks only. Refuse pid 0, kernel threads, and the caller.
+ * Kill leaves the slot DEAD for the next reap. Freeze sticks until awaken. */
+int task_kill(int id);
+int task_obliterate(int id);
+int task_freeze(int id);
+int task_awaken(int id);
+
 /* ---- surfaces (GUI G2) ---------------------------------------------------
  * Allocate a w*h*4 pixel buffer, map it PAGE_USER into the current task and
  * return its user address (0 on failure: not a user task, no slot, no frames,
@@ -108,18 +130,32 @@ int  task_stdin(void);    /* current task's stdin pipe or -1               */
 int  task_stdout(void);   /* current task's stdout pipe or -1              */
 
 /* ---- input events (GUI G3) -----------------------------------------------
- * Make the current (user) task the single input listener. Cleared at exit. */
+ * Make the current (user) task the input listener. A previous listener is
+ * stacked and restored when this task exits. Only the top receives events. */
+/* Slot that should receive input. A background listener (the desk, under
+ * F1 or a nested exec) must not steal keys meant for the foreground task. */
+void task_set_foreground(int id);
+int  task_foreground(void);
+
 void task_event_listen(void);
 int  task_event_has_listener(void);
 /* IRQ-side producers: queue an event for the listener and make it READY.
  * Return 1 if a listener took it, 0 if there is none (caller falls back to
  * the legacy ring / console behaviour). Never schedule — IRQ context. */
 int  task_event_key(char c);
+/* Free slots in the listener's queue (0 if there is no listener). */
+int  task_event_room(void);
 int  task_event_mouse(int32_t x, int32_t y, uint32_t buttons);
 /* Pop the next event for the current task, blocking (TASK_BLOCKED) up to
  * 'timeout' ticks (0 = poll, UEV_FOREVER = no timeout).
  * Returns 1 = event stored, 0 = timeout, -1 = not a user task. */
 int  task_event_wait(uevent_t *out, uint32_t timeout);
+
+/* Heap end for a user task. task_brk(0) returns it; any other value tries to
+ * move it, mapping pages up to brk_base + USER_HEAP_MAX. Returns the new
+ * break, or (uint32_t)-1. */
+void task_set_break(int id, uint32_t brk);
+uint32_t task_brk(uint32_t want);
 
 extern volatile int multitasking_on;
 

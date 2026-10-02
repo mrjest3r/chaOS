@@ -18,8 +18,8 @@
  * Blocking happens with interrupts enabled, so the scheduler keeps running
  * the other side of the conversation. Single-core, so no further locking. */
 
-#define MAX_PIPES 8
-#define PIPE_BUF  512
+#define MAX_PIPES 16
+#define PIPE_BUF  1024
 
 int pipe_create();                                /* -> id or -1            */
 int pipe_write(int id, const uint8_t *buf, int len); /* -> len or -1        */

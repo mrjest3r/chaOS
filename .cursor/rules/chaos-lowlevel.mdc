@@ -1,0 +1,14 @@
+---
+description: chaOS kernel/boot/cpu invariants when editing low-level code
+globs: "{boot,cpu,kernel,drivers}/**/*"
+alwaysApply: false
+---
+
+# chaOS low-level
+
+- Higher-half: stub VMA==LMA `0x10000`; rest via `boot/kernel.ld` at `0xC0010000+`.
+- Page dirs must clone identity **and** high PDEs; destroy must skip both.
+- Shell work off IRQ path (`shell_submit` / `shell_poll`, IF=1).
+- ATA: single-sector PIO only.
+- User ELFs at `USER_BASE` `0x40000000`; isolation supervisor-only kernel maps.
+- Extend syscalls deliberately; sync `docs/agent/ABI.md` when it exists (P2.2).

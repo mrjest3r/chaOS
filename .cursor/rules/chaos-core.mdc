@@ -1,0 +1,23 @@
+---
+description: chaOS agent protocol — read STATUS/MAP before exploring code
+alwaysApply: true
+---
+
+# chaOS agent protocol
+
+Before broad codebase search, read:
+
+1. `docs/agent/STATUS.md` — current step only
+2. Active step in `docs/agent/ROADMAP.md`
+3. `docs/agent/MAP.md` if architecture/invariants matter
+
+Entry: `AGENTS.md`.
+
+## Rules
+
+- Hardware: **x86 deck** — no ARM/Pi work unless STATUS says so.
+- One roadmap step per stretch of work; update STATUS when done.
+- Languages: host translators/cross-compile — no in-OS JVM/CPython.
+- Preserve invariants in MAP (higher-half, single-sector ATA, no blocking in IRQ, reap DEAD tasks).
+- `make test` after kernel/user behavior changes.
+- No commit/push unless user asks.

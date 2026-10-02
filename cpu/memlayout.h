@@ -23,7 +23,7 @@
  *
  *   0x10000 .. < INITRD_PHYS   kernel.bin + .bss   (KERNEL_LOAD_SECTORS budget;
  *                              the Makefile checks __bss_end fits as well)
- *   INITRD_PHYS .. +INITRD_MAX initrd.bin: every user program, packed by
+ *   INITRD_PHYS 0x34000 .. +INITRD_MAX initrd.bin: every user program, packed by
  *                              tools/mkinitrd.c; kernel/initrd.c seeds the
  *                              filesystem from it (makes the floppy/ISO
  *                              self-contained, no disk.img needed)
@@ -33,7 +33,7 @@
  * Keep the same numbers in boot/bootsect.asm (0x1000 / 0x3000 segments) and
  * the Makefile (KERNEL_SECTORS / INITRD_MAX). */
 #define KERNEL_LOAD_SECTORS 256u                 /* 128 KiB file budget      */
-#define INITRD_PHYS         0x00030000u
+#define INITRD_PHYS         0x00034000u /* kernel .bss may extend past 0x30000 */
 #define INITRD_MAX          0x00058000u          /* 352 KiB -> ends 0x88000  */
 
 #endif

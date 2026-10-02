@@ -1,6 +1,6 @@
 # chaOS syscall ABI
 
-**ABI version:** 7  
+**ABI version:** 10  
 **Arch:** x86-32, `int 0x80`  
 **Sources of truth:** `kernel/syscall.h`, `user/ulib.h`, `kernel/fb_user.h`, `kernel/event_user.h`, `drivers/mouse.h`
 
@@ -111,8 +111,34 @@ Never silently renumber. Prefer new numbers over overloading.
 | 24 | `SYS_EVENT_WAIT` | ebx = `uevent_t *`, ecx = timeout ticks (`0` poll, `UEV_FOREVER` block) | 1 event / 0 timeout / -1 |
 | 25 | `SYS_SPAWNIO` | ebx = cmdline, ecx = stdin pipe, edx = stdout pipe (`-1` inherit) | pid / &lt;0 |
 | 26 | `SYS_PIPEPOLL` | ebx = id | bytes readable / 0 empty / -1 EOF or invalid |
+| 27 | `SYS_PROCS` | ebx = `uproc_t *`, ecx = max | count written / -1 |
+| 28 | `SYS_PSCTL` | ebx = pid, ecx = `PSOP_*` | 0 / -1 |
+| 29 | `SYS_POWER` | ebx = `PWOP_*` | does not return; -1 if the op is unknown |
+| 30 | `SYS_CLOCK` | ebx = `uclock_t *` | 0, or -1 if the pointer is bad or the RTC read is nonsense |
+| 31 | `SYS_BRK` | ebx = new heap end, or 0 to query | current break, or -1 |
 
-Next free number: **27**.
+Next free number: **32**.
+
+`SYS_PSCTL` acts on **user** tasks only. It refuses pid 0, kernel threads, and the caller. `PSOP_SLAY` (1) kills one process. `PSOP_OBLITERATE` (2) also kills user processes it spawned (and theirs). `PSOP_FREEZE` (3) takes it off the scheduler until `PSOP_AWAKEN` (4).
+
+`SYS_POWER` stops every other task first. `PWOP_REBOOT` (1) pulses the keyboard-controller reset. `PWOP_SHUTDOWN` (2) and `PWOP_OFF` (3) both cut power through ACPI (`power_off`).
+
+### `uclock_t` (`kernel/clock_user.h`, v9)
+
+```c
+uint32_t year, month, day, hour, min, sec;
+```
+
+Local CMOS time. `month` is 1–12, `hour` is 0–23. There is no timezone.
+
+### `uproc_t` (`kernel/proc_user.h`, v8)
+
+```c
+int32_t  id;
+uint32_t state;   /* PROC_READY 1, RUNNING 2, SLEEPING 3, BLOCKED 5, FROZEN 6 */
+uint32_t user;    /* 1 ring 3, 0 kernel */
+char     name[24];
+```
 
 ## Shared structs
 
@@ -182,6 +208,9 @@ op needed after partial paints).
 | `umouse` | MOUSEGET |
 | `ufb` / `ufbblit` | FB |
 | `udoze` | DOZE |
+| `ulistprocs` / `upsctl` / `upower` | PROCS / PSCTL / POWER |
+| `uclock` | CLOCK |
+| `ubrk` / `umalloc` / `ufree` | BRK |
 | `usurface` / `usurface_free` | SURFACE / SURFFREE |
 | `uevent_wait` | EVENT_WAIT |
 

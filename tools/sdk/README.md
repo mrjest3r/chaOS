@@ -1,38 +1,39 @@
-# chaOS host SDK (Path A corner-cut)
+# chaOS host SDK (P5.1)
 
-Build user ELFs on the **host** with the same `i386-elf` toolchain the kernel
-uses, then inject them into `disk.img`. There is no in-OS compiler.
-
-## Build one program
-
-From the repo root (same flags as `Makefile` `user/%.elf`):
+One command on the host cross-builds a C file into a chaOS ELF and writes it
+onto `disk.img`. The deck does not have a compiler. It only runs the binary.
 
 ```bash
-CROSS=/path/to/i386elfgcc/bin   # if needed
-$CROSS/i386-elf-gcc -m32 -ffreestanding -fno-pic -fno-stack-protector \
-  -nostdlib -Wall -Wextra -Iuser -c myprog.c -o myprog.o
-# crt0 is assembled via nasm (see Makefile); reuse user/crt0.o from `make`
-$CROSS/i386-elf-gcc -m32 -ffreestanding -fno-pic -c user/ulib.c -o user/ulib.o
-$CROSS/i386-elf-ld -m elf_i386 -T user/linker.ld -o myprog.elf \
-  user/crt0.o myprog.o user/ulib.o
+make sdk SRC=tools/sdk/examples/beacon.c
 ```
 
-Or add `user/myprog.elf` to `USER_PROGS` in the top-level Makefile and run
-`make programs`.
+From the terminal: `summon beacon.elf`.
 
-## Inject onto the deck disk
+`SRC` is any freestanding C file that includes `ulib.h` and uses the syscall
+wrappers (`uprint`, `uwritefile`, `ufb`, …). A second argument renames the
+installed file:
 
 ```bash
-make programs          # rebuilds disk.img with USER_PROGS
-# or, after building myprog.elf:
-#   host mkfs tool packs named files into disk.img (see Makefile `programs`)
+bash tools/sdk/chaos-sdk prog.c myprog.elf
 ```
 
-On the deck: `summon myprog.elf` / `ignite myprog.elf`, or edit sources with
-`scribe` and keep binaries host-built until a translator lands (P5).
+The toolchain is `i386-elf-gcc` / `i386-elf-ld` / `nasm`. If they are not in
+`/usr/local/i386elfgcc/bin`, set `CROSS` to that `bin` directory.
 
-## Workflow (P1.6)
+## What the command will refuse
 
-1. Host: edit / translate / cross-compile → `*.elf`
-2. Host: `make programs` (or `make iso`)
-3. Deck: `scribe notes.txt` for onboard text; `ignite prog.elf` to run
+The filesystem stores at most 1 MiB under a name of at most 23 characters.
+The volume is about 1 GiB. A program and its heap live in a 64 MiB window;
+`SYS_BRK` allows 32 MiB of heap.
+`make sdk` prints the size and stops when the ELF is larger. There is no
+libc and no heap syscall. A program and its globals must also fit in the
+64 MiB user window (`USER_PROG_LIMIT` in `cpu/vmm.h`).
+
+Doom does not install. The engine is a hosted C program (libc, files) and the
+shareware WAD is larger than one file.
+
+## Boot image vs disk
+
+`make programs` still packs the programs in the Makefile into the boot image
+and the disk. `make sdk` only adds a file to `disk.img`. A boot with no IDE
+disk will not see it. `make run` attaches the disk, so `summon` finds it.

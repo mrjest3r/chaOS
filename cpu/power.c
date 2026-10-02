@@ -1,6 +1,15 @@
 #include "power.h"
 #include "ports.h"
 
+void power_reboot(void) {
+    asm volatile("cli");
+    uint8_t status = 0x02;
+    int spins = 100000;
+    while ((status & 0x02) && spins--) status = port_byte_in(0x64);
+    port_byte_out(0x64, 0xFE);
+    for (;;) asm volatile("hlt");
+}
+
 void power_off() {
     /* No preemption / NMIs while we tear down. */
     asm volatile("cli");

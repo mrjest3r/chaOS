@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "../kernel/fb_user.h"
 #include "../kernel/event_user.h"
+#include "../kernel/proc_user.h"
+#include "../kernel/clock_user.h"
 
 /* User-space wrappers around the kernel's int 0x80 system calls. A user program
  * links against these instead of the kernel; it never touches hardware directly
@@ -51,6 +53,13 @@ uint32_t *usurface(int w, int h);           /* w*h 0x00RRGGBB buffer or 0   */
 int      usurface_free(uint32_t *s);        /* 0 / -1                       */
 int      uatoi(const char *s);              /* decimal string -> int        */
 int      ugetpid(void);
+int      ulistprocs(uproc_t *out, int max); /* live tasks -> count / -1   */
+int      upsctl(int pid, int op);           /* PSOP_* -> 0 / -1            */
+int      upower(int op);                    /* PWOP_*; does not return     */
+int      uclock(uclock_t *out);             /* wall clock -> 0 / -1        */
+uint32_t ubrk(uint32_t addr);               /* heap end; 0 = query         */
+void    *umalloc(uint32_t n);               /* grows the break, or 0       */
+void     ufree(void *p);
 void     usleep(int ticks);
 int      uwritefile(const char *name, const void *buf, int len);
 int      ureadfile(const char *name, void *buf, int max);

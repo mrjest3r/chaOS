@@ -7,9 +7,10 @@
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/mouse.h"
-#include "../drivers/fb.h"
 #include "../drivers/idle.h"
-#include "fb_user.h"
+#include "../cpu/power.h"
+#include "../drivers/rtc.h"
+#include "proc_user.h"
 #include "uaccess.h"
 #include "../libc/string.h"
 #include <stdint.h>
@@ -29,6 +30,31 @@ static void con_print(const char *s) {
 static void con_backspace(void) {
     if (task_stdout() >= 0) con_print("\b");
     else kprint_backspace();
+}
+
+/* Window consoles understand a few cursor sequences. The kernel console
+ * does not, so these are pipe-only. */
+static void con_csi(char cmd, int n) {
+    if (task_stdout() < 0 || n <= 0) return;
+    if (n > 99) n = 99;
+    char b[8];
+    int i = 0;
+    b[i++] = 27;
+    b[i++] = '[';
+    if (n >= 10) b[i++] = (char) ('0' + n / 10);
+    b[i++] = (char) ('0' + n % 10);
+    b[i++] = cmd;
+    b[i] = '\0';
+    con_print(b);
+}
+
+static void con_span(const char *s, int n) {
+    for (int i = 0; i < n; i++) {
+        char b[2];
+        b[0] = s[i];
+        b[1] = '\0';
+        con_print(b);
+    }
 }
 
 /* Blocking single-character read. Waits with interrupts enabled so the timer
@@ -72,15 +98,33 @@ static int sys_readline(char *buf, int max) {
         char c = sys_getchar();
 
         if (c == 0x11) { /* left */
-            if (caret > 0) caret--;
+            if (caret > 0) {
+                caret--;
+                con_csi('D', 1);
+            }
             continue;
         }
         if (c == 0x12) { /* right */
-            if (caret < len) caret++;
+            if (caret < len) {
+                caret++;
+                con_csi('C', 1);
+            }
             continue;
         }
-        if (c == 0x13) { caret = 0; continue; } /* home */
-        if (c == 0x14) { caret = len; continue; } /* end */
+        if (c == 0x13) { /* home */
+            con_csi('D', caret);
+            caret = 0;
+            continue;
+        }
+        if (c == 0x14) { /* end */
+            con_csi('C', len - caret);
+            caret = len;
+            continue;
+        }
+        /* Up / Down scroll the window's history. A client editor reads
+         * these itself and never reaches this line editor. */
+        if (c == 0x15) { con_csi('S', 3); continue; }
+        if (c == 0x16) { con_csi('T', 3); continue; }
 
         if (c == '\b') {
             if (caret > 0) {
@@ -88,9 +132,14 @@ static int sys_readline(char *buf, int max) {
                 len--;
                 caret--;
                 buf[len] = '\0';
-                /* Simple echo: redraw not available in VGA path easily —
-                 * backspace visually once when caret was at end. */
-                if (caret == len) con_backspace();
+                if (task_stdout() >= 0) {
+                    con_csi('D', 1);
+                    con_span(buf + caret, len - caret);
+                    con_print(" ");
+                    con_csi('D', len - caret + 1);
+                } else if (caret == len) {
+                    con_backspace();
+                }
             }
             continue;
         }
@@ -104,7 +153,10 @@ static int sys_readline(char *buf, int max) {
             len++;
             caret++;
             buf[len] = '\0';
-            if (caret == len) {
+            if (task_stdout() >= 0) {
+                con_span(buf + caret - 1, len - (caret - 1));
+                con_csi('D', len - caret);
+            } else if (caret == len) {
                 char echo[2] = { c, '\0' };
                 con_print(echo);
             }
@@ -129,7 +181,12 @@ static int sys_wait(int pid) {
 static void syscall_handler(registers_t *r) {
     /* Argument pointers (ebx/ecx) are caller addresses. Ring 0 can reach every
      * mapping, so each one is checked against the user window (uaccess.h)
-     * before it is dereferenced; anything outside fails with -1. */
+     * before it is dereferenced; anything outside fails with -1.
+     * SYS_FB lives in syscall_fb.c so this switch stays the ABI table. */
+    if (r->eax > SYS_BRK) {
+        r->eax = (uint32_t) -1;
+        return;
+    }
     switch (r->eax) {
         case SYS_PRINT:
             if (user_str_ok((const char *) r->ebx, USER_STR_MAX) < 0) {
@@ -267,6 +324,58 @@ static void syscall_handler(registers_t *r) {
             r->eax = (uint32_t) pipe_avail((int) r->ebx);
             break;
 
+        case SYS_PROCS: {
+            int max = (int) r->ecx;
+            if (max < 0) {
+                r->eax = EFAULT;
+                break;
+            }
+            if (max > 16) max = 16;
+            if (max > 0 &&
+                !user_range_ok((const void *) r->ebx,
+                               (uint32_t) max * (uint32_t) sizeof(uproc_t))) {
+                r->eax = EFAULT;
+                break;
+            }
+            r->eax = (uint32_t) task_list((uproc_t *) r->ebx, max);
+            break;
+        }
+
+        case SYS_PSCTL:
+            if (r->ecx == PSOP_SLAY) r->eax = (uint32_t) task_kill((int) r->ebx);
+            else if (r->ecx == PSOP_OBLITERATE)
+                r->eax = (uint32_t) task_obliterate((int) r->ebx);
+            else if (r->ecx == PSOP_FREEZE)
+                r->eax = (uint32_t) task_freeze((int) r->ebx);
+            else if (r->ecx == PSOP_AWAKEN)
+                r->eax = (uint32_t) task_awaken((int) r->ebx);
+            else r->eax = EFAULT;
+            break;
+
+        case SYS_POWER:
+            if (r->ebx != PWOP_REBOOT && r->ebx != PWOP_SHUTDOWN &&
+                r->ebx != PWOP_OFF) {
+                r->eax = EFAULT;
+                break;
+            }
+            task_prepare_poweroff();
+            if (r->ebx == PWOP_REBOOT) power_reboot();
+            power_off();
+            r->eax = EFAULT;
+            break;
+
+        case SYS_CLOCK:
+            if (!user_range_ok((const void *) r->ebx, sizeof(uclock_t))) {
+                r->eax = EFAULT;
+                break;
+            }
+            r->eax = (uint32_t) rtc_read((uclock_t *) r->ebx);
+            break;
+
+        case SYS_BRK:
+            r->eax = task_brk(r->ebx);
+            break;
+
         case SYS_DELETEFILE:
             if (user_str_ok((const char *) r->ebx, USER_STR_MAX) < 0) {
                 r->eax = EFAULT;
@@ -297,78 +406,20 @@ static void syscall_handler(registers_t *r) {
              * (or injected) before we listened out of the ring into the
              * queue, so nothing is stranded between the two paths. */
             task_event_listen();
-            char c;
-            while ((c = kbd_getchar()) != 0) task_event_key(c);
+            /* Leave overflow in the ring. A burst longer than the queue
+             * (kbd_inject before listen) must survive until the next wait. */
+            while (task_event_room() > 0) {
+                char c = kbd_getchar();
+                if (!c) break;
+                task_event_key(c);
+            }
             r->eax = (uint32_t) task_event_wait((uevent_t *) r->ebx, r->ecx);
             break;
         }
 
-        case SYS_FB: {
-            fb_req_t *req = (fb_req_t *) r->ebx;
-            if (!user_range_ok(req, sizeof(fb_req_t))) {
-                r->eax = EFAULT;
-                break;
-            }
-            if (!fb_available()) {
-                r->eax = (uint32_t) -1;
-                break;
-            }
-            /* F1 console fallback: leave INFO/RESTORE alone so the compositor
-             * can still query the screen and we can restore after F1 again. */
-            if (kbd_console_override() &&
-                req->op != FBOP_INFO && req->op != FBOP_RESTORE) {
-                r->eax = 0;
-                break;
-            }
-            switch (req->op) {
-                case FBOP_INFO:
-                    req->width = fb_width();
-                    req->height = fb_height();
-                    req->pitch = fb_pitch();
-                    req->ok = 1;
-                    r->eax = 0;
-                    break;
-                case FBOP_FILL:
-                    fb_fill_rect(req->x, req->y, req->w, req->h, req->color);
-                    r->eax = 0;
-                    break;
-                case FBOP_TEXT:
-                    req->text[sizeof(req->text) - 1] = '\0';
-                    fb_draw_string(req->x, req->y, req->text,
-                                   req->color, req->color2);
-                    r->eax = 0;
-                    break;
-                case FBOP_CLEAR:
-                    fb_clear(req->color);
-                    r->eax = 0;
-                    break;
-                case FBOP_RESTORE:
-                    fb_console_full_redraw();
-                    r->eax = 0;
-                    break;
-                case FBOP_BLIT: {
-                    int w = req->w, h = req->h, pitch = req->src_pitch;
-                    if (w <= 0 || h <= 0 || w > FB_BLIT_MAX || h > FB_BLIT_MAX ||
-                        pitch < w || pitch > FB_BLIT_MAX) {
-                        r->eax = (uint32_t) -1;
-                        break;
-                    }
-                    /* Bounded above by 4096*4096*4 — no overflow. */
-                    uint32_t bytes = (uint32_t) h * (uint32_t) pitch * 4u;
-                    if (!user_range_ok(req->src, bytes)) {
-                        r->eax = EFAULT;
-                        break;
-                    }
-                    fb_blit(req->x, req->y, w, h, req->src, pitch);
-                    r->eax = 0;
-                    break;
-                }
-                default:
-                    r->eax = (uint32_t) -1;
-                    break;
-            }
+        case SYS_FB:
+            syscall_fb(r);
             break;
-        }
 
         case SYS_EXIT:
             task_exit(); /* terminates the task and reschedules; never returns */

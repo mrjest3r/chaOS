@@ -28,9 +28,9 @@ A 32-bit x86 hobby operating system built from scratch in C and assembly. chaOS 
 | **Userspace** | ELF32 loader, separate user build (`user/`), programs packed into the boot image (initrd) and installed at boot |
 | **Processes** | `SYS_SPAWN` / `SYS_WAIT`: programs can launch other programs and wait for them |
 | **Arguments** | Full `argc`/`argv`: command lines are delivered onto the new process's stack |
-| **Shell** | Kernel shell plus `ush.elf` lexicon; `attune` modes (`deck` / `notes` / `code`) |
-| **Graphics** | VBE soft console, PS/2 mouse cursor, `chaoswm.elf` askew compositor |
-| **Notes** | `folio.elf` file browser; `scribe.elf` editor; host cross-build notes in `tools/sdk/` |
+| **Shell** | Desk terminal (`terminal.elf`); verb names in `user/verbs.h`. Kernel shell only when there is no framebuffer |
+| **Graphics** | VBE soft console, PS/2 mouse cursor, `chaoswm.elf` desk (boot-to-compositor, attune palette, terminal icon on the desk) |
+| **Notes** | `scribe` opens a terminal text editor (`scribe FILE TEXT` creates a new file); `glance` / `reveal` stay in the terminal. `moment` is the clock, `age` is uptime |
 
 ## Requirements
 
@@ -70,6 +70,7 @@ Runs the full test suite and powers off QEMU automatically (no manual kill neede
 
 ```bash
 make test
+make qemu-kill    # stop a hung headless QEMU via its monitor socket (no reboot)
 ```
 
 This checks the heap, filesystem, multitasking, ELF loading, concurrent isolated user tasks (`spin.elf`), and memory isolation (`crash.elf`).
@@ -82,59 +83,33 @@ make clean && make run
 
 Delete `disk.img` to reset the on-disk filesystem.
 
-## Running as a VM (ISO)
-
-`make iso` produces `chaos.iso`, a bootable CD image. It uses El Torito
-**floppy emulation** (1.44 MiB image + boot catalog): the BIOS presents that
-image as drive 0 so the existing bootloader works. After `make test`, always
-`make clean && make iso` — AUTOTEST objects must not ship in an interactive ISO.
-
-The boot image is **self-contained**: `os-image.bin` / `chaos.flp` / the ISO
-carry the kernel *and* an **initrd** with every user program (`initrd.bin`,
-built by `tools/mkinitrd.c`). At boot the kernel mounts the IDE disk if one is
-attached and otherwise falls back to a **RAM filesystem**; either way it then
-installs any program from the initrd that is missing or has a different size.
-So a CD/floppy-only VM has the same **programs** as `make run`. They used to
-diverge because the ISO was only the 1.44 MiB floppy (kernel) while `make run`
-also attached `disk.img` where every `.elf` lived — boot the ISO without that
-disk and `exec ush.elf` failed. The initrd is what closed that gap.
-
-They still are not *identical* in three other ways (none of them “missing files”):
-
-1. **Persistence.** `make run` / `make run-iso` attach `-hda disk.img`. Files
-   you create survive reboot. `make run-iso-bare` (ISO, no disk) uses the RAM
-   filesystem — same programs, nothing persists.
-2. **How the BIOS sees the image.** `make run` is `-fda` (real floppy). The ISO
-   is El Torito *floppy emulation* (BIOS presents the same 1.44 MiB image as
-   drive 0). QEMU SeaBIOS does this correctly; VMware often cannot start those
-   ISOs at all — use `chaos.flp` there.
-3. **Display.** QEMU usually gets the 800×600×32 LFB. VirtualBox BIOS often
-   has no 32 bpp mode, so you get VGA text (shell still works; `chaoswm` needs
-   the framebuffer).
+### Install one program (host SDK)
 
 ```bash
-make run-iso-bare        # closest to “just the ISO”
-make test-iso            # CD + disk smoke (serial + initrd)
-make test-iso-bare       # CD, no disk (RAM fs + initrd)
+make sdk SRC=tools/sdk/examples/beacon.c
 ```
 
+That cross-builds the C file and writes `beacon.elf` onto `disk.img`. From the terminal, `summon beacon.elf`. The file has to be 32 KiB or smaller. Doom does not fit.
+
+## Running in a VM
+
+The boot image is `os-image.bin` / `chaos.flp` (kernel + initrd with every
+program). QEMU with std VGA (`make run`) starts the desk. There is no ISO
+target right now.
+
 ```bash
-make clean && make iso   # chaos.iso + chaos.flp + disk.img + user ELFs
-make test-iso            # QEMU CD boot smoke test
-make run-iso             # interactive QEMU from the ISO
-make vbox                # rebuild + chaos-disk.vdi + print VBox checklist
-MAKE_VBOX_VM=1 make vbox # also create a ready VM via tools/vbox-setup.sh
+make clean && make run          # QEMU, framebuffer desk
+make chaos.flp && make vbox-disk
+MAKE_VBOX_VM=1 make vbox        # floppy + IDE disk
 ```
 
-### VirtualBox (recommended)
+### VirtualBox
 
-Host paths with spaces (e.g. `drive E/...`) break VBox media attach. The
-helper copies images to `~/chaos-vbox-media/` and boots **floppy first**
-(most reliable). El Torito CD boot also works once the ISO is attached from
-that folder.
+Host paths with spaces break VBox media attach. The helper copies images to
+`~/chaos-vbox-media/` and boots the **floppy**.
 
 ```bash
-make clean && make iso && make vbox-disk
+make chaos.flp && make vbox-disk
 MAKE_VBOX_VM=1 make vbox
 VBoxManage startvm chaOS --type gui
 ```
@@ -142,15 +117,10 @@ VBoxManage startvm chaOS --type gui
 Manual UI setup:
 
 1. New VM → **Other** → Other → **128 MiB** → Firmware **BIOS** (not EFI).
-2. **Storage → IDE** (PIIX4), not SATA:
-   - Primary master: `chaos-disk.vdi` (`make vbox-disk`)
-   - Secondary master: `chaos.iso`
-3. Add a **Floppy** controller → `chaos.flp` (preferred boot medium).
-4. Boot order: **Floppy**, then Optical, then Hard Disk.
-5. Display: **VBoxVGA**. chaOS never uses Bochs DISPI on VirtualBox. Many VBox
-   BIOS builds do not expose a 32 bpp LFB mode — you get a clean **VGA text**
-   console (shell, disk, mouse still work). Use QEMU (`make run` / `make run-iso`)
-   for the framebuffer soft console / `chaoswm`.
+2. **Storage → IDE** (PIIX4), not SATA. Primary master: `chaos-disk.vdi`.
+3. Add a **Floppy** controller → `chaos.flp`. Boot order: **Floppy**, then Hard Disk.
+4. Display: **VBoxVGA**. Many VBox BIOS builds have no 32 bpp LFB, so you get
+   VGA text. Use QEMU (`make run`) for the desk.
 
 Without the hard disk the OS boots into the RAM filesystem with all programs
 from the initrd; attach the disk only if you want files to persist. Rebuilt
@@ -162,26 +132,20 @@ re-installs anything whose size changed).
 Firmware is **legacy BIOS only** (no UEFI). See [`docs/agent/BRINGUP.md`](docs/agent/BRINGUP.md).
 
 ```bash
-make clean && make iso
+make chaos.flp
 make write-usb USB=/dev/sdX    # writes chaos.flp; confirm the device carefully
 ```
 
 COM1 debug is **38400 8N1**. Prefer boards with IDE legacy mode or USB-FDD boot.
 
-### VMware Workstation (Windows) — do not use the ISO
+### VMware Workstation (Windows)
 
-VMware’s CD boot often **cannot** start El Torito floppy-emulation ISOs. The
-VM powers on to a **black screen** with no chaOS text at all (the BIOS
-bootloader never runs). BIOS/EFI settings being “correct” does not fix that.
-
-Send / use **`chaos.flp`** (or `os-image.bin` renamed to `chaos.flp` /
-`chaos.img`) instead:
+Use **`chaos.flp`** (or `os-image.bin` renamed to `chaos.flp`).
 
 1. New VM → **Other** → **Other 32-bit** → Firmware **BIOS** (not EFI).
-2. **Remove** the CD/DVD ISO (or leave it disconnected).
-3. **Add a Floppy drive** → “Use floppy image” → select `chaos.flp`.
-4. Boot order: **Floppy** first (VM settings → Options → Boot Options, or F2).
-5. Optional (persistence only): add `disk.img` — or any blank IDE disk — as an
+2. **Add a Floppy drive** → “Use floppy image” → select `chaos.flp`.
+3. Boot order: **Floppy** first (VM settings → Options → Boot Options, or F2).
+4. Optional (persistence only): add `disk.img` — or any blank IDE disk — as an
    **IDE** hard disk (convert to VMDK if needed):
 
 ```text
@@ -238,19 +202,20 @@ exec pipedemo.elf
 
 ### The user-space shell
 
-`exec ush.elf` starts a shell that is itself just a ring-3 program: it lists
-files, runs programs in the foreground (`run FILE ARGS...`) or background
-(`bg FILE`), and survives its children crashing — `run crash.elf` kills only
-the child. `exit` drops you back to the kernel shell.
+On a framebuffer boot the desk stays up. Open **terminal** (the desk icon, or `t`). That shell is a ring-3 program: `reveal` lists the current directory, `wander` / `abode` / `forge` move around and create directories, `summon PROGRAM` runs one and waits, and a crashing child does not take the terminal with it. `scribe FILE` opens the text editor in that same window; `scribe FILE TEXT` writes a new file. `moment` prints the date and time, `age` prints uptime. `banish` closes the window and returns to the desk. `q` and F1 do not open the kernel shell.
+
+The first boot asks for a user and a password and stores them. Every boot lists the account names, then asks for a username and a password before the desk. The terminal prompt shows that user (`name> `, or `name# ` after `ascend`). `ascend` checks that user's password. `manifest`, `exile`, `key`, and `assume` need `ascend`. So do `slay`, `obliterate`, `freeze`, `awaken`, `rebirth`, `slumber`, and `extinguish`. `observe` lists processes without it.
+
+Command names are only the verbs in `user/verbs.h`. `ls`, `exit`, and `rm` are not accepted.
 
 ### Command-line arguments
 
 Anything after the program name is delivered as `argc`/`argv` (with `argv[0]`
-being the program name), both from the kernel shell and from ush:
+being the program name), from the kernel shell (no framebuffer) or the terminal:
 
 ```
-exec args.elf hello world     # kernel shell
-run args.elf hello world      # inside ush
+exec args.elf hello world          # kernel shell
+summon args.elf hello world        # inside terminal
 ```
 
 Programs simply declare `int main(int argc, char **argv)`; the kernel copies
@@ -329,7 +294,9 @@ Both kernel mappings are **supervisor-only** in every address space. User progra
 14. **PS/2 mouse**: IRQ12 driver, XOR cursor on the LFB, `mouse` / `exec mousedemo.elf`, `umouse()`  
 15. **GUI groundwork**: clipped fill/blit primitives, per-task pixel surfaces (`SYS_SURFACE`), blocking input events (`SYS_EVENT_WAIT` — `chaoswm` sleeps at 0% CPU between keys/mouse)  
 16. **Apps in windows**: `chaoswm` runs `folio` / `scribe` / `ush` as client processes (`f` / `e` / `u`) with their console on pipes (`SYS_SPAWNIO`); output renders into an askew terminal window, keys route to the focused one, Esc toggles compositor commands  
-17. **Terminal widget**: `utext` grid with scrollback (Up/Down), 1×/2× glyphs (`2`), F1 drops back to the kernel console without quitting chaoswm  
+17. **Terminal widget**: `utext` grid. PgUp/PgDn and Up/Down scroll the window; Left/Right move the caret. `2` toggles 1×/2× glyphs
+18. **Deck terminal**: one shell (`terminal.elf`) as a desk icon on every mode; `user/verbs.h` names; `wander` / `abode` / `forge`; `q` and F1 do not reach the kernel shell
+19. **Clock and editor**: `moment` reads the CMOS clock; `scribe.elf` is a terminal text editor (Ctrl-O save, Ctrl-X quit)  
 
 
 ## Possible next steps

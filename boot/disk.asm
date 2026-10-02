@@ -1,71 +1,85 @@
-; Load CX sectors starting at LBA AX into memory beginning at ES:0000, from
-; BIOS drive DL. We read ONE sector per BIOS call, converting the linear sector
-; number to CHS each time - a single multi-sector int 13h read is not reliable
-; once it must cross a cylinder boundary. After each sector ES is advanced by
-; 0x20 paragraphs (512 bytes) so BX can stay 0 and a large image can be loaded
-; without BX ever overflowing.
-;
-; Floppy geometry (1.44 MiB): 18 sectors/track, 2 heads.
-
-SECTORS_PER_TRACK equ 18
-NUM_HEADS         equ 2
+; Load CX sectors from LBA AX into ES:0000, BIOS drive DL.
+; HDD (DL >= 0x80): int 13h AH=42, then CHS 63/16. Floppy: CHS 18/2.
+; One sector per call so a cylinder crossing never fails the BIOS.
 
 disk_load:
     pusha
-    mov [dl_drive], dl
-    mov [total_sectors], cx
-    mov [cur_lba], ax
-    mov word [done_cnt], 0
-    xor bx, bx                 ; every sector is read to ES:0000
+    mov [drv], dl
+    mov di, cx
+    mov [lba], ax
 
-.next_sector:
-    mov ax, [done_cnt]
-    cmp ax, [total_sectors]
-    jae .finish
+.next:
+    test di, di
+    jz .ok
 
-    ; --- Convert cur_lba -> CHS ---
-    mov ax, [cur_lba]
+    cmp byte [drv], 0x80
+    jb .flop
+
+    mov ax, es
+    mov [dap_seg], ax
+    mov ax, [lba]
+    mov [dap_lba], ax
+    mov si, dap
+    mov dl, [drv]
+    mov ah, 0x42
+    int 0x13
+    jnc .adv
+    ; LBA failed — HDD CHS 63/16
+    mov ax, [lba]
     xor dx, dx
-    div word [spt]             ; ax = lba / SPT, dx = lba % SPT
+    mov bx, 63
+    div bx
+    inc dx
     mov cl, dl
-    inc cl                     ; cl = sector = (lba % SPT) + 1
     xor dx, dx
-    div word [num_heads]       ; ax = cylinder, dx = head
-    mov ch, al                 ; ch = cylinder low 8 bits
-    mov dh, dl                 ; dh = head
+    mov bx, 16
+    div bx
+    jmp .readchs
 
-    ; --- Read one sector into ES:0000 ---
+.flop:
+    mov ax, [lba]
+    xor dx, dx
+    mov bx, 18
+    div bx
+    inc dx
+    mov cl, dl
+    xor dx, dx
+    shr ax, 1
+    mov ch, al
+    adc dh, 0
+    jmp .int13
+
+.readchs:
+    mov ch, al
+    mov dh, dl
+.int13:
     mov ah, 0x02
     mov al, 1
-    mov dl, [dl_drive]
+    mov dl, [drv]
+    xor bx, bx
     int 0x13
     jc disk_error
 
-    ; advance the load segment by 512 bytes (0x20 paragraphs)
+.adv:
     mov ax, es
     add ax, 0x20
     mov es, ax
+    inc word [lba]
+    dec di
+    jmp .next
 
-    inc word [cur_lba]
-    inc word [done_cnt]
-    jmp .next_sector
-
-.finish:
+.ok:
     popa
     ret
 
 disk_error:
-    mov bx, DISK_ERROR
-    call print
-    call print_nl
     jmp $
 
-DISK_ERROR    db "Disk read error", 0
-
-; disk_load scratch variables
-dl_drive      db 0
-total_sectors dw 0
-done_cnt      dw 0
-cur_lba       dw 0
-spt           dw SECTORS_PER_TRACK
-num_heads     dw NUM_HEADS
+drv db 0
+lba dw 0
+dap:
+    db 16, 0
+    dw 1
+    dw 0
+dap_seg: dw 0
+dap_lba: dd 0, 0

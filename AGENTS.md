@@ -21,7 +21,7 @@ Read these **before** exploring the tree. Do not re-derive architecture from sou
 
 ## Non-negotiables
 
-- Target remains **x86** (deck will be an x86 board). No ARM port unless STATUS says so.
-- Path A corner-cuts: languages via **host translators / cross-compile**, not in-OS JVM/CPython.
+
 - Do not commit/push unless the user asks.
 - Keep changes scoped to the active roadmap step.
+- Before running a test that deletes or overwrites files (`accounts`, `session`, notes, or anything else the user keeps), say so in the reply. `make test` boots a copy of `disk.img`; name what that guest removes anyway.

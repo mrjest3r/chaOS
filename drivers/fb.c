@@ -514,9 +514,40 @@ void fb_console_clear(void) {
 }
 
 void fb_console_putc(char c) {
+    static int cons_esc = 0;
     if (!fb_ok || !cells) return;
     snap_console_live();
     caret_erase();
+
+    /* Screen editors speak form-feed and a small cursor sequence. Swallow
+     * them here so the soft console does not paint them as glyphs. */
+    if (cons_esc == 1) {
+        cons_esc = (c == '[') ? 2 : 0;
+        caret_draw();
+        return;
+    }
+    if (cons_esc == 2) {
+        if ((c >= '0' && c <= '9') || c == ';') {
+            caret_draw();
+            return;
+        }
+        cons_esc = 0;
+        caret_draw();
+        return;
+    }
+    if (c == 27) {
+        cons_esc = 1;
+        caret_draw();
+        return;
+    }
+    if (c == '\f') {
+        cons_esc = 0;
+        fb_console_clear();
+        caret_col = cons_x;
+        caret_row = cons_y;
+        caret_draw();
+        return;
+    }
 
     if (c == '\n') {
         cons_x = 0;

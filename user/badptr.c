@@ -29,7 +29,7 @@ int main(void) {
     const uint32_t kern_hi  = 0xC0010000u; /* higher-half kernel text   */
     const uint32_t kern_lo  = 0x00010000u; /* identity alias of same    */
     const uint32_t lfb      = 0xE0000000u; /* shared LFB mapping        */
-    const uint32_t win_end  = 0x40400000u; /* USER_STACK_TOP            */
+    const uint32_t win_end  = 0x44000000u; /* USER_STACK_TOP (64 MiB)   */
     const uint32_t nullp    = 0;
 
     expect_fault("print kernel",      raw3(SYS_PRINT, kern_hi, 0, 0));
@@ -71,6 +71,41 @@ int main(void) {
     expect_fault("event_wait -> lfb",    raw3(SYS_EVENT_WAIT, lfb, 0, 0));
     expect_fault("event_wait past window",
                  raw3(SYS_EVENT_WAIT, win_end - 4, 0, 0));
+    expect_fault("procs -> kernel", raw3(SYS_PROCS, kern_hi, 4, 0));
+    expect_fault("procs -> lfb", raw3(SYS_PROCS, lfb, 1, 0));
+    expect_fault("procs past window", raw3(SYS_PROCS, win_end - 8, 4, 0));
+    expect_fault("clock -> kernel", raw3(SYS_CLOCK, kern_hi, 0, 0));
+    expect_fault("clock -> lfb", raw3(SYS_CLOCK, lfb, 0, 0));
+    expect_fault("clock past window", raw3(SYS_CLOCK, win_end - 4, 0, 0));
+    expect_fault("clock null", raw3(SYS_CLOCK, nullp, 0, 0));
+    {
+        uclock_t clk;
+        if (uclock(&clk) < 0 || clk.month < 1 || clk.month > 12 || clk.hour > 23) {
+            fails++;
+            uprint("[badptr] valid clock FAILED\n");
+        }
+    }
+    {
+        uint32_t brk = ubrk(0);
+        uint32_t grown = ubrk(brk + 4096u);
+        if (brk == (uint32_t) -1 || grown < brk + 4096u) {
+            fails++;
+            uprint("[badptr] brk FAILED\n");
+        } else {
+            *(volatile uint32_t *) brk = 0x1234u;
+            if (ubrk(0x50000000u) != (uint32_t) -1) {
+                fails++;
+                uprint("[badptr] brk past window accepted\n");
+            }
+        }
+    }
+    {
+        uproc_t one;
+        if (ulistprocs(&one, 1) < 1) {
+            fails++;
+            uprint("[badptr] valid proclist FAILED\n");
+        }
+    }
 
     /* G2 surfaces: a live surface is a valid pointer, a freed one is not,
      * and reading off its end or from an unallocated slot must fail. */

@@ -3,27 +3,27 @@
 ; Image layout (sectors):  0 = this   1..KERNEL_SECTORS = kernel.bin (padded)
 ;                          then INITRD_SECTORS of initrd.bin (user programs).
 ; Both counts come from the Makefile (-D). Load addresses (see
-; cpu/memlayout.h): kernel at 0x10000, initrd at INITRD_PHYS = 0x30000.
+; cpu/memlayout.h): kernel at 0x10000, initrd at INITRD_PHYS = 0x34000.
 [org 0x7c00]
 KERNEL_OFFSET equ 0x10000
 %ifndef KERNEL_SECTORS
 %error "assemble with -DKERNEL_SECTORS=n -DINITRD_SECTORS=n (see Makefile)"
 %endif
 
-    mov [BOOT_DRIVE], dl
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
     mov bp, 0x9000
     mov sp, bp
-
-    mov bx, MSG_BOOT
-    call print
-    call print_nl
+    mov [BOOT_DRIVE], dl
 
     call load_kernel
     call vbe_init
     call switch_to_pm
     jmp $
 
-%include "boot/print.asm"
 %include "boot/disk.asm"
 %include "boot/gdt.asm"
 %include "boot/vbe.asm"
@@ -37,7 +37,7 @@ load_kernel:
     mov ax, 1
     mov cx, KERNEL_SECTORS
     call disk_load
-    mov ax, 0x3000          ; initrd -> 0x30000 (INITRD_PHYS)
+    mov ax, 0x3400          ; initrd -> 0x34000 (INITRD_PHYS)
     mov es, ax
     mov ax, 1 + KERNEL_SECTORS
     mov cx, INITRD_SECTORS
@@ -50,7 +50,6 @@ BEGIN_PM:
     jmp $
 
 BOOT_DRIVE db 0
-MSG_BOOT db "chaOS boot", 0
 
 times 510 - ($-$$) db 0
 dw 0xaa55

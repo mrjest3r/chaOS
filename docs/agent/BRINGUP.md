@@ -3,6 +3,19 @@
 **Firmware freeze: legacy BIOS only (not UEFI).**  
 The boot path is `boot/bootsect.asm` → real-mode disk load → optional VBE → protected mode → higher-half kernel. There is no UEFI / GRUB stage. Do not add an EFI path unless STATUS reopens it.
 
+## Published minimum (2026-09-29)
+
+This is the floor for a machine that runs chaOS. Faster CPUs, more RAM, and larger disks are in range. The kernel does not use 1 GB yet. That is the work list, not a reason to raise the floor.
+
+| Floor | Value |
+|-------|--------|
+| CPU | 1 GHz, x86 |
+| Firmware | Legacy BIOS / CSM |
+| RAM | 1 GB |
+| Disk | about 1 GB for the OS files (the size may change) |
+
+Screen and keyboard are not extra lines. A BIOS PC is expected to provide a display and a keyboard the current drivers accept (VBE 800×600×32, PS/2 or BIOS USB-keyboard emulation). More RAM than 1 GB stays unused until the map grows past the cap below. The boot floppy stays small. The 1 GB lives on the IDE disk.
+
 ## Exit criteria (P3.1)
 
 On the chosen **x86** board:
@@ -26,14 +39,13 @@ Good first targets: old ThinkPad / mini-ITX with IDE or “Legacy IDE”, or any
 ## Host media (build)
 
 ```bash
-make clean && make iso    # chaos.flp + chaos.iso + disk.img + user ELFs
+make chaos.flp disk.img programs
 make vbox-disk            # optional: chaos-disk.vdi for VMs
 ```
 
 | Artifact | Use on hardware |
 |----------|-----------------|
 | `chaos.flp` (1474560 bytes) | Best: write to USB as floppy image; BIOS “USB Floppy” / FDD emulation. Self-contained: kernel + initrd with all programs |
-| `chaos.iso` | Burn / write as CD/DVD; El Torito floppy emulation (same self-contained image) |
 | `disk.img` | Optional. Raw IDE disk image for **persistent** files (dd to a spare disk/partition carefully). Any blank IDE disk works too: the kernel formats and seeds it from the initrd on first boot. Without a disk everything runs from a RAM filesystem |
 
 ### Write floppy image to USB (destructive)
@@ -65,7 +77,7 @@ Expect `[boot] serial ready` then the banner (also mirrored to the screen when V
 
 - [ ] Board chosen; BIOS set to **Legacy / CSM**, Secure Boot off
 - [ ] Boot order: USB-FDD or CD before HDD
-- [ ] `make clean && make iso` on host; write `chaos.flp` (or burn ISO)
+- [ ] `make chaos.flp` on the host; write `chaos.flp`
 - [ ] Power on → see `chaOS boot` / banner / COM1 lines
 - [ ] Type `help`, `frames`, `ls` (if disk attached)
 - [ ] Note in STATUS: board model, boot medium, VGA vs serial, any quirks
@@ -80,6 +92,38 @@ Expect `[boot] serial ready` then the banner (also mirrored to the screen when V
 | Banner then hang | Less common; capture COM1 log |
 | Banner says "No IDE disk: files live in RAM" | Expected without an IDE primary master (SATA without legacy mode). Programs still run from the initrd; only persistence is missing |
 | No FB, text OK | BIOS lacks 32 bpp VBE — acceptable for P3.1 |
+
+## G7 — Display freeze (software)
+
+The deck GUI (`chaoswm`) needs a **32 bpp** linear framebuffer. This is the
+mode the boot path will ask for on the board; do not change it without a
+STATUS note.
+
+| Priority | Mode | VBE | Notes |
+|----------|------|-----|--------|
+| **1 (chosen)** | **800×600×32** | **0x115** + LFB bit (`0x4115`) | QEMU BIOS and Bochs DISPI both land here. Target for the x86 board. |
+| 2 | 1024×768×32 | 0x118 | Only if 0x115 is missing |
+| 3 | 640×480×32 | 0x112 | Last 32 bpp try |
+| fail | VGA text 80×25 | — | Soft console + kernel shell; no desk. Acceptable for P3.1 proof, not for G6. |
+
+Implementation (`boot/vbe.asm` + `drivers/fb.c`):
+
+1. Real-mode `int 0x10` AX=0x4F02 tries 0x115 / 0x118 / 0x112, 32 bpp + LFB only (24 bpp is rejected).
+2. Compact info block at `0x5000` (`CHAOSFB`).
+3. Non-VirtualBox: if BIOS VBE failed, `fb_init` forces **800×600×32** via Bochs DISPI.
+4. VirtualBox VBoxVGA: BIOS VBE only (DISPI smashes the display).
+
+On COM1 you should see one of:
+
+```
+[fb] BIOS VBE 32bpp
+[fb] 800x600 ...
+```
+
+or `[fb] DISPI 32bpp ...` then the same 800×600 line, or
+`[fb] no 32bpp VBE — VGA text console` if the BIOS cannot do it.
+
+**Board ask:** pick a machine whose BIOS offers 800×600×32 LFB (or Bochs-compatible DISPI). If it only has 24 bpp / 16 bpp, the desk will not start; F1 / VGA text still works.
 
 ## After P3.1
 

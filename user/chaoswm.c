@@ -1,8 +1,9 @@
 #include "ulib.h"
 #include "ugfx.h"
 #include "utext.h"
+#include "attune.h"
 
-/* Roadmap P1.5 / G2 / G3 / G4 / G5 — chaos compositor (userspace).
+/* Roadmap P1.5 / G2–G6 — chaos compositor (userspace).
  * Askew floating windows, drag, focus, chaos jitter. No grid snap.
  *
  * G2: every frame is composed into a SYS_SURFACE back buffer and presented
@@ -12,32 +13,65 @@
  *     with its console on two pipes (SYS_SPAWNIO); the compositor renders
  *     its output into a text grid and forwards keys to the focused one.
  *     The client never touches the screen — skew stays here.
- * G5: `u` summons ush (2× glyphs). Children inherit the window pipes, so
- *     folio/scribe from ush stay in the same window. Up/Down scroll the
- *     grid's history. `2` toggles 1×/2×. F1 (kernel) drops back to the
- *     text console without killing chaoswm.
+ * G5: `t` summons terminal (2× glyphs). Children inherit the window
+ *     pipes. PgUp/PgDn scroll the focused grid. Up/Down do that from
+ *     the line editor; a client editor receives them raw. `2` toggles 1×/2×.
+ *     q and F1 do not leave the desk or open the kernel shell.
+ * G6: interactive boot execs this as the desk. Palette follows the shared
+ *     `attune` file (deck / notes / code). The top bar cycles modes
+ *     (click a chip, or `a`). Programs live on the desk as icons
+ *     (`desk_icons`); terminal is the first one.
  *
  * Keys (command mode, or when the focused window has no client):
- *   u ush   f folio   e scribe   s dummy   b banish   n next
- *   2 scale   +/- chaos   q quit   Esc back to the app
- * Keys (app mode): everything goes to the focused client; Esc = command mode.
- *   Up/Down always scroll the focused client's history.
- * Mouse: click focus / drag title bar. */
+ *   a attune   t terminal   s dummy   b banish   n next
+ *   2 scale   +/- chaos   Esc back to the app
+ * Keys (app mode): everything goes to the focused client, including
+ *   Up/Down. Esc = command mode (not forwarded). Ctrl+letter arrives as
+ *   a control byte so a client editor can save and quit.
+ * Mouse: desk icons, toolbar chips, click focus / drag title bar.
+ * Byte 0x01 is not a key. The test harness injects it to end the desk. */
 
 #define MAX_WIN      8
 #define TITLE_H      18
-#define DESK_BG      0x00101828u
-#define BAR_BG       0x00202838u
-#define HINT_FG      0x00C0C8D0u
-#define TERM_BG      0x00141C24u
-#define TERM_FG      0x00D8E0C0u
+#define BAR_H        26
 #define JITTER_TICKS 4      /* ~12 frames/s of wiggle while chaos > 0     */
 #define CLIENT_TICKS 2      /* poll client pipes this often               */
 #define TERM_COLS    44
 #define TERM_ROWS    16
 #define TERM_PAD     4
-#define STDIN_HIGHWATER 400 /* drop keys rather than block on a full pipe */
+#define STDIN_HIGHWATER 900 /* drop keys rather than block on a full pipe */
 #define QUIT_GRACE   150    /* ticks to wait for clients at quit          */
+
+enum {
+    CHIP_DECK = ATTUNE_DECK,
+    CHIP_NOTES = ATTUNE_NOTES,
+    CHIP_CODE = ATTUNE_CODE
+};
+
+/* Desk icons. Append a row to give another program an icon.
+ * glyph is the short mark in the plate; prog is the summon line;
+ * scale is the window glyph scale (1 or 2). */
+typedef struct {
+    const char *label;
+    const char *prog;
+    const char *glyph;
+    int scale;
+} desk_icon_t;
+
+static const desk_icon_t desk_icons[] = {
+    { "terminal", "terminal.elf", ">_", 2 },
+    { "doom", "doom.elf", "D", 2 },
+};
+#define N_ICONS ((int) (sizeof desk_icons / sizeof desk_icons[0]))
+
+#define ICON_PLATE_W 48
+#define ICON_PLATE_H 36
+#define ICON_HIT_W   72
+#define ICON_HIT_H   52
+#define ICON_ROWS    8
+
+/* Not a scancode. make test injects this; the keyboard cannot produce it. */
+#define HARNESS_HALT 1
 
 enum { W_FREE = 0, W_ALIVE, W_CLOSING };
 
@@ -56,12 +90,23 @@ typedef struct {
 
 static win_t wins[MAX_WIN];
 static int focus = -1;
-static int chaos = 2;
+static int chaos = 0;
 static int cmd_mode = 1;
+static int attune = ATTUNE_DECK;
 static int scr_w, scr_h;
 static int drag = -1, drag_ox, drag_oy;
 static uint32_t prev_btns;
 static usurf_t back;   /* full-screen back buffer */
+static uint32_t pal_desk, pal_bar, pal_hint, pal_term_bg, pal_term_fg;
+static uint32_t pal_chip, pal_chip_on;
+
+#define MAX_CHIP 8
+static struct {
+    int x, w, kind;
+    const char *lab;
+} chips[MAX_CHIP];
+static int n_chips;
+static int n_summoned;
 
 static void cpy(char *dst, const char *src, int max) {
     int i = 0;
@@ -70,6 +115,106 @@ static void cpy(char *dst, const char *src, int max) {
         i++;
     }
     dst[i] = '\0';
+}
+
+static void apply_palette(void) {
+    if (attune == ATTUNE_NOTES) {
+        pal_desk = 0x00201810u;
+        pal_bar = 0x00382820u;
+        pal_hint = 0x00E8D0B0u;
+        pal_term_bg = 0x00241C14u;
+        pal_term_fg = 0x00E8D8C0u;
+        pal_chip = 0x00504030u;
+        pal_chip_on = 0x00C87840u;
+    } else if (attune == ATTUNE_CODE) {
+        pal_desk = 0x00081410u;
+        pal_bar = 0x00102018u;
+        pal_hint = 0x00A0D8A8u;
+        pal_term_bg = 0x000C1810u;
+        pal_term_fg = 0x00B8E0B0u;
+        pal_chip = 0x00203828u;
+        pal_chip_on = 0x0030A060u;
+    } else {
+        pal_desk = 0x00101828u;
+        pal_bar = 0x00202838u;
+        pal_hint = 0x00C0C8D0u;
+        pal_term_bg = 0x00141C24u;
+        pal_term_fg = 0x00D8E0C0u;
+        pal_chip = 0x00304050u;
+        pal_chip_on = 0x00E0A040u;
+    }
+}
+
+static void set_attune(int m) {
+    if (m < ATTUNE_DECK || m > ATTUNE_CODE) m = ATTUNE_DECK;
+    attune = m;
+    attune_save(attune);
+    apply_palette();
+}
+
+static void add_chip(int *x, int kind, const char *lab) {
+    int i = 0;
+    while (lab[i]) i++;
+    int w = 8 + i * 8;
+    if (n_chips >= MAX_CHIP) return;
+    chips[n_chips].x = *x;
+    chips[n_chips].w = w;
+    chips[n_chips].kind = kind;
+    chips[n_chips].lab = lab;
+    n_chips++;
+    *x += w + 4;
+}
+
+static void layout_bar(void) {
+    n_chips = 0;
+    int x = 6;
+    add_chip(&x, CHIP_DECK, "deck");
+    add_chip(&x, CHIP_NOTES, "notes");
+    add_chip(&x, CHIP_CODE, "code");
+}
+
+/* Column down the left of the desk, then the next column. */
+static void icon_place(int i, int *x, int *y) {
+    int col = i / ICON_ROWS;
+    int row = i % ICON_ROWS;
+    *x = 16 + col * 88;
+    *y = BAR_H + 16 + row * 68;
+}
+
+static void draw_icons(void) {
+    for (int i = 0; i < N_ICONS; i++) {
+        int x, y;
+        icon_place(i, &x, &y);
+        ugfx_fill(&back, x, y, ICON_PLATE_W, ICON_PLATE_H, pal_term_bg);
+        ugfx_fill(&back, x, y, ICON_PLATE_W, 2, pal_chip_on);
+        ugfx_fill(&back, x, y + ICON_PLATE_H - 2, ICON_PLATE_W, 2, pal_chip_on);
+        ugfx_fill(&back, x, y, 2, ICON_PLATE_H, pal_chip_on);
+        ugfx_fill(&back, x + ICON_PLATE_W - 2, y, 2, ICON_PLATE_H, pal_chip_on);
+        ugfx_text(&back, x + 8, y + 10, desk_icons[i].glyph,
+                  pal_term_fg, pal_term_bg, 1, 2);
+        ugfx_text(&back, x, y + 40, desk_icons[i].label,
+                  pal_hint, pal_desk, 1, 1);
+    }
+}
+
+static int icon_named(const char *lab) {
+    for (int i = 0; i < N_ICONS; i++) {
+        const char *a = desk_icons[i].label;
+        int k = 0;
+        while (a[k] && a[k] == lab[k]) k++;
+        if (a[k] == lab[k]) return i;
+    }
+    return -1;
+}
+
+static int icon_at(int mx, int my) {
+    for (int i = 0; i < N_ICONS; i++) {
+        int x, y;
+        icon_place(i, &x, &y);
+        if (mx >= x && mx < x + ICON_HIT_W && my >= y && my < y + ICON_HIT_H)
+            return i;
+    }
+    return -1;
 }
 
 static int fb_info(void) {
@@ -177,7 +322,7 @@ static int summon_client(const char *cmdline, const char *title, int n, int sx) 
     if (n & 1) sk = -sk;
     int bw, bh;
     client_geom(sx, &bw, &bh);
-    int i = summon_win(title, x, y, bw, bh, sk, TERM_BG, 0x00405870u);
+    int i = summon_win(title, x, y, bw, bh, sk, pal_term_bg, pal_chip);
     if (i < 0) {
         upipeclose(in); drain_free(in);
         upipeclose(out); drain_free(out);
@@ -338,7 +483,7 @@ static void draw_win(int i) {
     if (has_client(w)) {
         int sx = w->sx < 1 ? 1 : w->sx;
         utext_draw(&w->text, &back, x + sk + TERM_PAD, y + th + TERM_PAD,
-                   TERM_FG, TERM_BG, sx, sx, focused && !cmd_mode && w->text.view == 0);
+                   pal_term_fg, pal_term_bg, sx, sx, focused && !cmd_mode && w->text.view == 0);
     } else if (focused) {
         ugfx_text(&back, x + sk + 8, y + th + 8, "focus", 0x00FFFFFF, w->body, 1, 2);
     } else {
@@ -347,17 +492,22 @@ static void draw_win(int i) {
 }
 
 static void redraw(void) {
-    ugfx_clear(&back, DESK_BG);
-    ugfx_fill(&back, 0, 0, scr_w, 22, BAR_BG);
-    int command = cmd_mode || !focused_client();
-    ugfx_text(&back, 8, 4,
-              command ? "chaoswm [cmd] u:ush f:folio e:scribe s:win b n 2:scale +/- q  F1:console"
-                      : "chaoswm [app] keys to the window - Esc commands  Up/Dn scroll  F1:console",
-              HINT_FG, BAR_BG, 1, 2);
-
+    ugfx_clear(&back, pal_desk);
+    layout_bar();
+    ugfx_fill(&back, 0, 0, scr_w, BAR_H, pal_bar);
+    draw_icons();
+    for (int i = 0; i < n_chips; i++) {
+        int on = (chips[i].kind == attune);
+        uint32_t bg = on ? pal_chip_on : pal_chip;
+        uint32_t fg = on ? 0x00101010u : pal_hint;
+        ugfx_fill(&back, chips[i].x, 4, chips[i].w, 18, bg);
+        ugfx_text(&back, chips[i].x + 4, 6, chips[i].lab, fg, bg, 1, 2);
+    }
     char lvl[] = "chaos:0";
     lvl[6] = (char) ('0' + (chaos > 9 ? 9 : chaos));
-    ugfx_text(&back, scr_w - 72, 4, lvl, HINT_FG, BAR_BG, 1, 2);
+    ugfx_text(&back, scr_w - 72, 6, lvl, pal_hint, pal_bar, 1, 2);
+    if (!(cmd_mode || !focused_client()))
+        ugfx_text(&back, scr_w - 200, 6, "esc", pal_hint, pal_bar, 1, 2);
 
     for (int i = 0; i < MAX_WIN; i++)
         if (wins[i].state == W_ALIVE && i != focus) draw_win(i);
@@ -366,8 +516,6 @@ static void redraw(void) {
 }
 
 /* ---- input --------------------------------------------------------------- */
-
-static int n_summoned;
 
 static void summon_dummy(void) {
     int n = ++n_summoned;
@@ -392,13 +540,44 @@ static void toggle_scale(void) {
     client_geom(w->sx, &w->w, &w->h);
 }
 
+static int same_str(const char *a, const char *b) {
+    int i = 0;
+    while (a[i] && a[i] == b[i]) i++;
+    return a[i] == b[i];
+}
+
+static void launch_desk_icon(int i) {
+    if (i < 0 || i >= N_ICONS) return;
+    /* Doom draws on the framebuffer, which the desk would paint over.
+     * Leave the desk, let the kernel run it, then come back. */
+    if (same_str(desk_icons[i].prog, "doom.elf")) {
+        char one[1];
+        one[0] = '1';
+        uwritefile("launchdoom", one, 1);
+        quit();
+    }
+    summon_client(desk_icons[i].prog, desk_icons[i].label,
+                  ++n_summoned, desk_icons[i].scale);
+}
+
+static int toolbar_click(int mx, int my) {
+    if (my < 0 || my >= BAR_H) return 0;
+    layout_bar();
+    for (int i = 0; i < n_chips; i++) {
+        if (mx < chips[i].x || mx >= chips[i].x + chips[i].w) continue;
+        set_attune(chips[i].kind);
+        redraw();
+        return 1;
+    }
+    return 1; /* eat bar clicks so they do not hit windows underneath */
+}
+
 static void handle_command(char c) {
     switch (c) {
-        case 'q': case 'Q': quit(); break;
-        case 'u': case 'U': summon_client("ush.elf", "ush", ++n_summoned, 2); break;
-        case 'f': case 'F': summon_client("folio.elf", "folio", ++n_summoned, 1); break;
-        case 'e': case 'E': summon_client("scribe.elf notes.txt", "scribe", ++n_summoned, 1); break;
-        case 's': case 'S': summon_dummy(); break;
+        case HARNESS_HALT: quit(); break;
+        case 'a': case 'A': set_attune((attune + 1) % 3); break;
+        case 't': case 'T': launch_desk_icon(icon_named("terminal")); break;
+        case 's': case 'S': if (attune == ATTUNE_DECK) summon_dummy(); break;
         case 'b': case 'B': banish_focus(); break;
         case 'n': case 'N': case '\t': next_focus(); break;
         case '2':           toggle_scale(); break;
@@ -411,8 +590,19 @@ static void handle_command(char c) {
 }
 
 static void handle_key(char c) {
-    /* Up/Down always scroll the focused client's history (G5). */
-    if (focus >= 0 && has_client(&wins[focus]) &&
+    unsigned char u = (unsigned char) c;
+    /* Key 0 is a repaint poke, not a typed character. */
+    if (c == 0) { redraw(); return; }
+    /* Page keys scroll the window in either mode. They are not forwarded,
+     * so an editor keeps Up/Down for its own cursor. */
+    if ((u == UEV_KEY_PGUP || u == UEV_KEY_PGDN) &&
+        focus >= 0 && wins[focus].state != W_FREE) {
+        utext_scroll(&wins[focus].text, u == UEV_KEY_PGUP ? 10 : -10);
+        redraw();
+        return;
+    }
+    /* Command mode keeps Up/Down for history. App mode forwards them. */
+    if (cmd_mode && focus >= 0 && has_client(&wins[focus]) &&
         (c == (char) UEV_KEY_UP || c == (char) UEV_KEY_DOWN)) {
         utext_scroll(&wins[focus].text, c == (char) UEV_KEY_UP ? 3 : -3);
         redraw();
@@ -436,6 +626,7 @@ static void handle_mouse(const uevent_t *m) {
     int th = 0;
 
     if (down && !prev) {
+        if (toolbar_click(m->x, m->y)) return;
         int hit = hit_test(m->x, m->y, &th);
         if (hit >= 0) {
             focus = hit;
@@ -446,13 +637,19 @@ static void handle_mouse(const uevent_t *m) {
                 drag_oy = m->y - wins[focus].y;
             }
             redraw();
+        } else {
+            int ix = icon_at(m->x, m->y);
+            if (ix >= 0) {
+                launch_desk_icon(ix);
+                redraw();
+            }
         }
     } else if (down && drag >= 0 && wins[drag].state == W_ALIVE) {
         wins[drag].x = m->x - drag_ox;
         wins[drag].y = m->y - drag_oy;
         /* Soft clamp — still free-floating, no snap. */
         if (wins[drag].x < -40) wins[drag].x = -40;
-        if (wins[drag].y < 22) wins[drag].y = 22;
+        if (wins[drag].y < BAR_H) wins[drag].y = BAR_H;
         if (wins[drag].x > scr_w - 40) wins[drag].x = scr_w - 40;
         if (wins[drag].y > scr_h - 40) wins[drag].y = scr_h - 40;
         redraw();
@@ -474,11 +671,8 @@ void main(void) {
 
     for (int i = 0; i < MAX_WIN; i++) wins[i].state = W_FREE;
 
-    /* Two seed windows — deliberately askew, not aligned. */
-    summon_win("scrap", 48, 64, 200, 120, 18, 0x00CC3355u, 0x00AA2244u);
-    summon_win("rift", 220, 100, 180, 110, -22, 0x0033AACCu, 0x002288AAu);
-    focus = 1;
-
+    attune = attune_load();
+    apply_palette();
     redraw();
 
     uint32_t last_jitter = uuptime();

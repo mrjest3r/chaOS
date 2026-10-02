@@ -14,6 +14,7 @@
 #define ENTER     0x1C
 #define LSHIFT    0x2A
 #define RSHIFT    0x36
+#define LCTRL     0x1D
 #define CAPS      0x3A
 #define PGUP      0x49
 #define PGDN      0x51
@@ -23,10 +24,10 @@
 #define ARROW_LEFT  0x4B
 #define ARROW_RIGHT 0x4D
 #define ARROW_DOWN  0x50
-#define F1          0x3B
 
 static uint8_t shift = 0;
 static uint8_t caps  = 0;
+static uint8_t ctrl  = 0;
 static uint8_t e0_prefix = 0;
 
 /* Where keystrokes are routed. The shell owns the keyboard by default; while
@@ -80,10 +81,13 @@ void kbd_set_console_override(int on) {
         kbd_focus = KBD_FOCUS_SHELL;
         console_override = 1;
         if (fb_available()) fb_console_full_redraw();
+        shell_ensure_prompt();
     } else {
         if (!console_override) return;
         console_override = 0;
         kbd_focus = saved_focus;
+        /* Wake the desk so it paints over the console immediately. */
+        task_event_key(0);
     }
 }
 
@@ -156,6 +160,7 @@ static void keyboard_callback(registers_t *regs) {
     if (scancode & 0x80) {
         uint8_t released = scancode & 0x7F;
         if (released == LSHIFT || released == RSHIFT) shift = 0;
+        if (released == LCTRL) ctrl = 0; /* left, and right (E0 1D) */
         e0_prefix = 0;
         UNUSED(regs);
         return;
@@ -169,24 +174,24 @@ static void keyboard_callback(registers_t *regs) {
     }
     idle_touch();
 
-    /* F1: peel the kernel console out from under a compositor (G5). */
-    if (scancode == F1) {
-        kbd_set_console_override(!console_override);
-        e0_prefix = 0;
-        UNUSED(regs);
-        return;
-    }
+    /* F1 is not a desk escape. The kernel shell stays off the GUI. */
 
     if (scancode == LSHIFT || scancode == RSHIFT) { shift = 1; e0_prefix = 0; return; }
+    if (scancode == LCTRL) { ctrl = 1; e0_prefix = 0; return; }
     if (scancode == CAPS) { caps = !caps; e0_prefix = 0; return; }
 
+    /* The desk owns the screen. Page keys go to that listener so the
+     * focused window scrolls; the kernel console scrolls only when nobody
+     * takes them. */
     if (scancode == PGUP || (e0_prefix && scancode == PGUP)) {
-        screen_scroll_view(10);
+        if (kbd_focus != KBD_FOCUS_PROGRAM || !task_event_key((char) UEV_KEY_PGUP))
+            screen_scroll_view(10);
         e0_prefix = 0;
         return;
     }
     if (scancode == PGDN || (e0_prefix && scancode == PGDN)) {
-        screen_scroll_view(-10);
+        if (kbd_focus != KBD_FOCUS_PROGRAM || !task_event_key((char) UEV_KEY_PGDN))
+            screen_scroll_view(-10);
         e0_prefix = 0;
         return;
     }
@@ -212,10 +217,24 @@ static void keyboard_callback(registers_t *regs) {
         return;
     }
 
+    /* Esc is not in the printable table. Programs (and the desk) use 27. */
+    if (scancode == 0x01) {
+        if (kbd_focus == KBD_FOCUS_PROGRAM) deliver(27);
+        return;
+    }
+
     if (scancode > SC_MAX) return;
 
     char base = sc_ascii[(int) scancode];
     if (base == '?') return;
+
+    /* Ctrl+letter becomes the control byte (^O = 0x0F, ^X = 0x18) so a
+     * foreground program can save and quit. The kernel shell ignores them. */
+    if (ctrl) {
+        if (base >= 'a' && base <= 'z' && kbd_focus == KBD_FOCUS_PROGRAM)
+            deliver((char) (base - 'a' + 1));
+        return;
+    }
 
     char letter;
     if (base >= 'a' && base <= 'z')

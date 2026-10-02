@@ -8,6 +8,7 @@
 #include "../drivers/fb.h"
 #include "../drivers/mouse.h"
 #include "../drivers/idle.h"
+#include "../cpu/power.h"
 #include "../libc/string.h"
 #include "../libc/mem.h"
 #include <stdint.h>
@@ -74,6 +75,8 @@ static void edit_redraw(void) {
     screen_redraw_input(edit_buf, edit_caret);
 }
 
+static int prompt_shown = 0;
+
 void shell_prompt() {
     kprint("> ");
     edit_len = 0;
@@ -82,6 +85,11 @@ void shell_prompt() {
     screen_mark_input_origin();
     screen_caret_show(1);
     edit_redraw();
+    prompt_shown = 1;
+}
+
+void shell_ensure_prompt(void) {
+    if (!prompt_shown) shell_prompt();
 }
 
 void shell_input_char(char c) {
@@ -183,6 +191,8 @@ static const char *task_state_name(task_state_t s) {
         case TASK_RUNNING:  return "running";
         case TASK_SLEEPING: return "sleeping";
         case TASK_DEAD:     return "dead";
+        case TASK_BLOCKED:  return "blocked";
+        case TASK_FROZEN:   return "frozen";
         default:            return "unused";
     }
 }
@@ -344,8 +354,8 @@ static void cmd_exec(char *name) {
 }
 
 static void cmd_fault() {
-    /* Touch an address outside the identity-mapped region (16 MiB). */
-    uint32_t *bad = (uint32_t *) 0x02000000;
+    /* Touch an address above the 1 GiB identity map. */
+    uint32_t *bad = (uint32_t *) 0x80000000;
     volatile uint32_t value = *bad;
     (void) value;
 }
@@ -390,10 +400,8 @@ static void cmd_doze(void) {
 
 static void cmd_reboot() {
     kprint("Rebooting...\n");
-    uint8_t status = 0x02;
-    while (status & 0x02) status = port_byte_in(0x64); /* wait for input buffer */
-    port_byte_out(0x64, 0xFE); /* pulse the CPU reset line */
-    asm volatile("hlt");
+    task_prepare_poweroff();
+    power_reboot();
 }
 
 void shell_execute(char *input) {

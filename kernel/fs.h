@@ -5,7 +5,7 @@
 
 #define FS_NAME_LEN     24
 #define FS_MAX_FILES    32
-#define FS_MAX_FILESIZE (64 * 512) /* 32 KiB per file */
+#define FS_MAX_FILESIZE (32u * 1024u * 1024u) /* 32 MiB per file; the volume holds ~1 GiB */
 
 typedef struct {
     char name[FS_NAME_LEN];

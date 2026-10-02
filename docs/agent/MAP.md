@@ -12,13 +12,13 @@ Compact world-model. Prefer this over scanning the repo.
 
 ## Current technical state (Phase 11 done)
 
-- 32-bit x86, higher-half kernel at `0xC0010000`, identity alias of first 16 MiB.
-- Boot: floppy/ISO (`chaos.flp` / `chaos.iso`), QEMU primary test bed.
+- 32-bit x86, higher-half kernel at `0xC0010000`. Identity map is installed RAM up to 1 GiB. The higher-half alias stays 16 MiB.
+- Boot: floppy image (`chaos.flp` / `os-image.bin`), QEMU primary test bed. Interactive boot starts the desk (`chaoswm`) when a 32 bpp LFB is up; `q` returns to the kernel shell.
 - Paging + per-process AS, ELF32 loader, ring-3, syscalls, preemptive tasks.
 - Simple FS on ATA; **VBE** soft console + text caret; PS/2 keyboard + mouse.
-- Personal lexicon in `ush` (`docs/agent/LEXICON.md`); technical aliases kept.
+- Personal lexicon in `terminal.elf` (`user/verbs.h`, `docs/agent/LEXICON.md`). The shell accepts only those verbs.
 - Chaos compositor (`chaoswm.elf`); onboard editor (`scribe.elf`); host SDK notes.
-- Pipes (IPC) between processes; user programs: `user/*.elf`, `ush.elf`, ulib syscalls.
+- Pipes (IPC) between processes; user programs: `user/*.elf`, `terminal.elf`, ulib syscalls.
 - Toolchain: `i386-elf-gcc` / `i386-elf-ld` via Makefile `CROSS`.
 
 ## Architecture graph
@@ -69,7 +69,7 @@ flowchart TB
 | `drivers/` | screen, **fb**, keyboard, serial, ata, mouse, pci |
 | `kernel/` | main, shell, heap, fs (ATA or RAM backend), **initrd** (seeds fs from the boot image), task (+ surfaces, event queue), syscall, elf, pipe; shared user headers `fb_user.h`, `event_user.h`, `font8x8.h` |
 | `libc/` | freestanding helpers |
-| `user/` | crt0, ulib, **ugfx** (surface drawing), **utext** (text-grid widget), sample ELFs, `linker.ld` @ `USER_BASE` |
+| `user/` | crt0, ulib, **ugfx** (surface drawing), **utext** (text-grid widget), **attune.h** (shared deck mode file), sample ELFs, `linker.ld` @ `USER_BASE` |
 | `tools/` | host `mkfs` (disk.img) and `mkinitrd` (initrd.bin); optional SDK notes under `tools/sdk/` |
 | `docs/agent/` | MAP / ROADMAP / STATUS / LEXICON / ABI |
 
@@ -103,11 +103,11 @@ Syscall numbers / structs for userspace: [`ABI.md`](ABI.md).
 |----------------|---------|
 | `KERNEL_VIRT_BASE` `0xC0000000` | Higher half |
 | Load phys `0x10000` | Boot stub + kernel LMA; `KERNEL_LOAD_SECTORS` 256 (128 KiB budget, Makefile asserts) |
-| `INITRD_PHYS` `0x30000` | Initrd blob ("CHAOSIRD", all user ELFs) loaded by bootsect; `INITRD_MAX` `0x58000` bytes (ends below the `0x90000` boot stack) |
+| `INITRD_PHYS` `0x34000` | Initrd blob ("CHAOSIRD", all user ELFs) loaded by bootsect; `INITRD_MAX` `0x58000` bytes (ends below the `0x90000` boot stack) |
 | `USER_BASE` `0x40000000` | User link address |
 | `SURF_BASE` `0x50000000` | Per-task pixel surfaces, 4 × 4 MiB PDE slots (G2) |
 | `HIGH_PDE_INDEX` 768 | Higher-half PDE slot |
-| Identity map first 16 MiB | phys==virt still valid for heap/frames |
+| Identity map | Installed RAM, capped at 1 GiB. Higher-half alias is 16 MiB so it does not cover the framebuffer. |
 
 ## Invariants (do not break)
 
@@ -122,21 +122,23 @@ Syscall numbers / structs for userspace: [`ABI.md`](ABI.md).
 9. Boot VBE calls need **ES=0** (after `load_kernel`, ES is not 0).
 10. Every syscall that dereferences a caller pointer validates it with `user_range_ok` / `user_str_ok` (`kernel/uaccess.h`) first. New syscalls must too; `badptr.elf` AUTOTEST probes them.
 11. Surfaces occupy one whole PDE each (`vmm_unmap_pde`); `task_t.surf[]` is the source of truth for which surface addresses are valid. Never map anything else into `[SURF_BASE, SURF_END)`.
-12. `TASK_BLOCKED` is entered only by `task_event_wait` (cli → check queue → block → `schedule`). Producers (`task_event_key` / `task_event_mouse`, IRQ context) only enqueue and flip the listener to `READY`; they never call `schedule`. One input listener at a time (`ev_listener`), cleared in `task_exit`.
+12. `TASK_BLOCKED` is entered only by `task_event_wait` (cli → check queue → block → `schedule`). Producers (`task_event_key` / `task_event_mouse`, IRQ context) only enqueue and flip the listener to `READY`; they never call `schedule`. One **active** listener at a time (`ev_listener`); a previous listener is stacked (depth 4) and restored when the current task exits. `TASK_FROZEN` is a separate state: the scheduler skips it, and an event push does not thaw it.
 13. Console syscalls (`PRINT`, `GETCHAR`, `READLINE`, `TRYCHAR`) go through `con_print` / `sys_getchar` in `syscall.c`, which honour `task_t.stdin_pipe` / `stdout_pipe`. Never call `kprint` / `kbd_getchar` directly from a syscall that a windowed client might use. Only the `io_owner` closes stdout at exit (inherited children must not).
 
 ## Syscall surface (ulib)
 
-Full table in [`ABI.md`](ABI.md) (v7). Extend deliberately; bump ABI version + STATUS.
+Full table in [`ABI.md`](ABI.md) (v9). Extend deliberately; bump ABI version + STATUS.
 
 ## Input routing (G3) and windowed clients (G4)
 
 - Kernel shell has focus → keys edit the shell line, clicks place its caret.
-- Program has focus, no listener → keys go to the `SYS_GETCHAR` ring (`ush`, `scribe`, `folio` run bare).
+- Program has focus, no listener → keys go to the `SYS_GETCHAR` ring (`terminal`, `scribe`, `folio` run bare).
 - A task called `SYS_EVENT_WAIT` → it is the listener: program-focus keys and **all** mouse packets become `uevent_t`s in its queue (`kernel/event_user.h`); it sleeps `TASK_BLOCKED` between them. `chaoswm`, `mousedemo` use this.
 - `chaoswm` as compositor server: per window two pipes + `SYS_SPAWNIO`; client output → `utext_t` grid (`user/utext.c`) → composed into the back buffer with the window's skew; keys for the focused window → its stdin pipe (Esc toggles command mode). Client exit = EOF on its stdout; banish = close its stdin (kernel ends the client on its next read). Clients never call `SYS_FB`.
-- `u` summons `ush` at 2×; `folio`/`scribe` from that ush inherit the same pipes (stay in the window). Up/Down scroll `utext` history (48 lines). `2` toggles glyph scale.
-- **F1** (`kbd_console_override`): restores the kernel soft console and routes keys to the shell. User `SYS_FB` draws except INFO/RESTORE are no-ops until F1 again. Does not kill chaoswm.
+- `t` or the **terminal** desk icon summons `terminal.elf` at 2× on every attune mode. Icons are the `desk_icons` table in `user/chaoswm.c` (label, program, glyph, scale). PgUp/PgDn scroll the focused window's `utext` history (48 lines). At the prompt, Up/Down scroll that history and Left/Right/Home/End move the caret. In app mode those four arrows are delivered to the client, so `scribe` can move. `2` toggles glyph scale.
+- **q and F1 do not leave the desk.** The kernel shell is not reachable from the GUI. `kbd_console_override` still exists and still swallows user `SYS_FB` draws, but no key sets it.
+- **G6 desk:** interactive boot execs `chaoswm` when `fb_available()` and stays there. Palette follows the `attune` file (`user/attune.h`). Modes: deck (blue), notes (warm), code (phosphor). `a` cycles; chips are clickable. Programs sit on the desk as icons; the toolbar is modes only. The desk itself added no syscall. Process control is ABI v8 (`SYS_PROCS`, `SYS_PSCTL`, `SYS_POWER`). The wall clock is ABI v9 (`SYS_CLOCK`).
+- **Directories** stay inside the existing 24-byte file name. A directory is a zero-byte file ending in `/`. A file in it is a path such as `notes/hello`. The current directory lives in `terminal.elf` only. `summon` still uses the stored program name. ABI stays v7.
 
 ## Framebuffer drawing rules (G1)
 
@@ -150,16 +152,16 @@ Full table in [`ABI.md`](ABI.md) (v7). Extend deliberately; bump ABI version + S
 
 ## Corner-cut language strategy (future)
 
-- Build on **host** (or translators → native/ELF).
+- Build on the **host**. `make sdk SRC=file.c` (`tools/sdk/chaos-sdk`) cross-builds one ELF and writes it to `disk.img`.
 - Deck runs artifacts only until a tiny VM is an explicit roadmap step.
 - No OpenJDK/CPython-in-kernel goals.
 
 ## Hardware target
 
-- **x86 board** for cyberdeck (aligns with current arch).
+- **x86 board** for cyberdeck (aligns with current arch). Published floor: 1 GHz, legacy BIOS, 1 GB RAM, about 1 GB disk (`BRINGUP.md`).
 - **Firmware freeze (P3.1):** legacy **BIOS only** — no UEFI bootloader.
 - Bring-up checklist: [`BRINGUP.md`](BRINGUP.md).
-- One board revision later; freeze resolution/input when graphics land.
+- **G7 display freeze:** 800×600×32 (VBE 0x115 + LFB). See `BRINGUP.md` § G7.
 
 ## Where NOT to look first
 

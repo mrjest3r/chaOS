@@ -4,7 +4,7 @@
 #include "../cpu/arch.h"
 #include "../libc/mem.h"
 
-#define MAX_TASKS   8
+#define MAX_TASKS   16
 #define KSTACK_SIZE 8192
 
 static task_t tasks[MAX_TASKS];
@@ -16,8 +16,28 @@ volatile int multitasking_on = 0;
  * actually switching between different address spaces. */
 static uint32_t active_cr3 = 0;
 
-/* Index of the task receiving input events (SYS_EVENT_WAIT), -1 = none. */
+/* Active input listener (SYS_EVENT_WAIT). A short stack lets a nested
+ * listener (a client that also waits) restore the compositor on exit.
+ * Only the top of the stack receives events (still one listener at a time). */
+#define EV_LISTEN_STACK 4
+static int fg_slot = -1;
 static volatile int ev_listener = -1;
+static int ev_prev[EV_LISTEN_STACK];
+static int ev_prev_n = 0;
+
+static void ev_clear_stack(void) {
+    ev_listener = -1;
+    ev_prev_n = 0;
+}
+
+static void ev_drop_task(int idx) {
+    int w = 0;
+    for (int i = 0; i < ev_prev_n; i++)
+        if (ev_prev[i] != idx) ev_prev[w++] = ev_prev[i];
+    ev_prev_n = w;
+    if (ev_listener == idx)
+        ev_listener = (ev_prev_n > 0) ? ev_prev[--ev_prev_n] : -1;
+}
 
 static void reset_events(task_t *t) {
     t->ev_head = t->ev_tail = 0;
@@ -26,6 +46,43 @@ static void reset_events(task_t *t) {
 static void reset_io(task_t *t) {
     t->stdin_pipe = t->stdout_pipe = -1;
     t->io_owner = 0;
+}
+
+static int live_state(task_state_t s) {
+    return s != TASK_UNUSED && s != TASK_DEAD;
+}
+
+static void name_set(task_t *t, const char *s) {
+    int i = 0;
+    if (!s) s = "";
+    while (s[i] && i < TASK_NAME_LEN - 1) {
+        t->name[i] = s[i];
+        i++;
+    }
+    t->name[i] = '\0';
+}
+
+/* Tear down a user task that is not on the CPU. Slot stays DEAD until reap. */
+static void drop_user_task(task_t *t) {
+    uint32_t dir = t->page_dir;
+    if (dir && dir != (uint32_t) kernel_directory) {
+        vmm_destroy_addrspace(dir);
+        t->page_dir = (uint32_t) kernel_directory;
+    }
+    for (int s = 0; s < TASK_MAX_SURF; s++)
+        t->surf[s].vaddr = t->surf[s].bytes = 0;
+    ev_drop_task(t->id);
+    reset_events(t);
+    if (t->io_owner && t->stdout_pipe >= 0)
+        pipe_close(t->stdout_pipe);
+    reset_io(t);
+    if (fg_slot == t->id) fg_slot = -1;
+    t->state = TASK_DEAD;
+}
+
+static void orphan_children(int id) {
+    for (int i = 1; i < MAX_TASKS; i++)
+        if (tasks[i].parent == id) tasks[i].parent = -1;
 }
 
 /* Trampoline for kernel threads. context_switch "returns" here the first time a
@@ -52,8 +109,10 @@ void tasking_init() {
     /* Task 0 is the already-running kernel context (the shell / idle task). It
      * always stays runnable, so the scheduler never runs dry. */
     tasks[0].id = 0;
+    tasks[0].parent = -1;
     tasks[0].entry = 0;
     tasks[0].is_user = 0;
+    name_set(&tasks[0], "kernel");
     tasks[0].state = TASK_RUNNING;
     tasks[0].counter = 0;
     tasks[0].sleep_until = 0;
@@ -63,7 +122,7 @@ void tasking_init() {
     tasks[0].user_stack_top = 0;
     reset_events(&tasks[0]);
     reset_io(&tasks[0]);
-    ev_listener = -1;
+    ev_clear_stack();
 
     current = &tasks[0];
     current_idx = 0;
@@ -108,14 +167,17 @@ int task_create(void (*entry)()) {
 
     task_t *t = &tasks[i];
     t->id = i;
+    t->parent = current ? current->id : -1;
     t->entry = entry;
     t->is_user = 0;
+    name_set(t, "kthread");
     t->counter = 0;
     t->sleep_until = 0;
     t->kstack = kstack;
     t->kstack_top = kstack + KSTACK_SIZE;
     t->page_dir = (uint32_t) kernel_directory;
     t->user_stack_top = 0;
+    t->brk_base = t->brk = 0;
     for (int s = 0; s < TASK_MAX_SURF; s++) t->surf[s].vaddr = t->surf[s].bytes = 0;
     reset_events(t);
     reset_io(t);
@@ -134,14 +196,17 @@ int task_create_user(uint32_t entry, uint32_t page_dir, uint32_t user_stack_top)
 
     task_t *t = &tasks[i];
     t->id = i;
+    t->parent = current ? current->id : -1;
     t->entry = (void (*)()) entry;
     t->is_user = 1;
+    name_set(t, "");
     t->counter = 0;
     t->sleep_until = 0;
     t->kstack = kstack;
     t->kstack_top = kstack + KSTACK_SIZE;
     t->page_dir = page_dir;
     t->user_stack_top = user_stack_top;
+    t->brk_base = t->brk = 0;
     for (int s = 0; s < TASK_MAX_SURF; s++) t->surf[s].vaddr = t->surf[s].bytes = 0;
     reset_events(t);
     /* A windowed program's children talk to the same window. */
@@ -182,6 +247,8 @@ void schedule() {
             tasks[i].state = TASK_UNUSED;
             tasks[i].page_dir = 0;
             tasks[i].entry = 0;
+            tasks[i].parent = -1;
+            tasks[i].name[0] = '\0';
         }
     }
 
@@ -239,6 +306,8 @@ void task_reap() {
             tasks[i].state = TASK_UNUSED;
             tasks[i].page_dir = 0;
             tasks[i].entry = 0;
+            tasks[i].parent = -1;
+            tasks[i].name[0] = '\0';
         }
     }
     asm volatile("sti");
@@ -260,13 +329,15 @@ void task_prepare_poweroff(void) {
         tasks[i].state = TASK_UNUSED;
         tasks[i].page_dir = 0;
         tasks[i].entry = 0;
+        tasks[i].parent = -1;
+        tasks[i].name[0] = '\0';
     }
     load_page_directory(kernel_directory);
     active_cr3 = (uint32_t) kernel_directory;
     current_idx = 0;
     current = &tasks[0];
     current->state = TASK_RUNNING;
-    ev_listener = -1;
+    ev_clear_stack();
     tss_set_stack(current->kstack_top);
     asm volatile("sti");
 }
@@ -305,8 +376,7 @@ void task_exit() {
     /* Surface frames went with the address space above; just forget them. */
     for (int s = 0; s < TASK_MAX_SURF; s++) current->surf[s].vaddr = current->surf[s].bytes = 0;
 
-    /* Input goes back to the legacy ring / console once the listener dies. */
-    if (ev_listener == current_idx) ev_listener = -1;
+    ev_drop_task(current_idx);
     reset_events(current);
 
     /* Hang up on the compositor so it sees EOF and can reclaim the window. */
@@ -355,8 +425,121 @@ task_state_t task_get_state(int id) {
 
 int task_alive(int id) {
     if (id < 0 || id >= MAX_TASKS) return 0;
-    task_state_t s = tasks[id].state;
-    return s != TASK_UNUSED && s != TASK_DEAD;
+    return live_state(tasks[id].state);
+}
+
+void task_set_name(int id, const char *name) {
+    if (id < 0 || id >= MAX_TASKS) return;
+    name_set(&tasks[id], name);
+}
+
+int task_set_parent(int id, int parent) {
+    asm volatile("cli");
+    if (id <= 0 || id >= MAX_TASKS || !live_state(tasks[id].state) ||
+        parent < -1 || parent >= MAX_TASKS || parent == id) {
+        asm volatile("sti");
+        return -1;
+    }
+    tasks[id].parent = parent;
+    asm volatile("sti");
+    return 0;
+}
+
+int task_list(uproc_t *out, int max) {
+    if (!out || max < 0) return -1;
+    if (max > MAX_TASKS) max = MAX_TASKS;
+    task_reap();
+    asm volatile("cli");
+    int n = 0;
+    for (int i = 0; i < MAX_TASKS && n < max; i++) {
+        if (!live_state(tasks[i].state)) continue;
+        out[n].id = tasks[i].id;
+        out[n].state = (uint32_t) tasks[i].state;
+        out[n].user = tasks[i].is_user ? 1u : 0u;
+        {
+            int k = 0;
+            while (tasks[i].name[k] && k < PROC_NAME_LEN - 1) {
+                out[n].name[k] = tasks[i].name[k];
+                k++;
+            }
+            out[n].name[k] = '\0';
+        }
+        n++;
+    }
+    asm volatile("sti");
+    return n;
+}
+
+static int user_target(int id) {
+    if (id <= 0 || id >= MAX_TASKS || id == current_idx) return 0;
+    task_t *t = &tasks[id];
+    return live_state(t->state) && t->is_user;
+}
+
+int task_kill(int id) {
+    asm volatile("cli");
+    if (!user_target(id)) {
+        asm volatile("sti");
+        return -1;
+    }
+    orphan_children(id);
+    drop_user_task(&tasks[id]);
+    asm volatile("sti");
+    return 0;
+}
+
+int task_obliterate(int id) {
+    asm volatile("cli");
+    if (!user_target(id)) {
+        asm volatile("sti");
+        return -1;
+    }
+    uint8_t mark[MAX_TASKS];
+    for (int i = 0; i < MAX_TASKS; i++) mark[i] = 0;
+    mark[id] = 1;
+    int grew = 1;
+    while (grew) {
+        grew = 0;
+        for (int i = 1; i < MAX_TASKS; i++) {
+            if (mark[i] || i == current_idx) continue;
+            if (!live_state(tasks[i].state) || !tasks[i].is_user) continue;
+            int p = tasks[i].parent;
+            if (p > 0 && p < MAX_TASKS && mark[p]) {
+                mark[i] = 1;
+                grew = 1;
+            }
+        }
+    }
+    mark[current_idx] = 0;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (!mark[i]) continue;
+        orphan_children(i);
+        drop_user_task(&tasks[i]);
+    }
+    asm volatile("sti");
+    return 0;
+}
+
+int task_freeze(int id) {
+    asm volatile("cli");
+    if (!user_target(id) || tasks[id].state == TASK_FROZEN) {
+        asm volatile("sti");
+        return -1;
+    }
+    tasks[id].state = TASK_FROZEN;
+    asm volatile("sti");
+    return 0;
+}
+
+int task_awaken(int id) {
+    asm volatile("cli");
+    if (id <= 0 || id >= MAX_TASKS || tasks[id].state != TASK_FROZEN) {
+        asm volatile("sti");
+        return -1;
+    }
+    tasks[id].state = TASK_READY;
+    asm volatile("sti");
+    return 0;
 }
 
 /* ---- surfaces (GUI G2) --------------------------------------------------- */
@@ -438,8 +621,21 @@ int task_stdout(void) {
 
 /* ---- input events (GUI G3) ----------------------------------------------- */
 
+void task_set_foreground(int id) { fg_slot = id; }
+int task_foreground(void) { return fg_slot; }
+
+/* A listener that is not the foreground task (desk under F1 / nested exec)
+ * must not eat keys or mouse packets meant for the shell or the child. */
+static int listener_gets_input(task_t *t) {
+    if (fg_slot >= 0 && t->id != fg_slot) return 0;
+    return 1;
+}
+
 void task_event_listen(void) {
     if (!current || !current->is_user) return;
+    if (ev_listener == current_idx) return;
+    if (ev_listener >= 0 && ev_prev_n < EV_LISTEN_STACK)
+        ev_prev[ev_prev_n++] = ev_listener;
     ev_listener = current_idx;
 }
 
@@ -452,25 +648,36 @@ static task_t *listener(void) {
     if (ev_listener < 0) return 0;
     task_t *t = &tasks[ev_listener];
     if (t->state == TASK_UNUSED || t->state == TASK_DEAD) {
-        ev_listener = -1;
-        return 0;
+        ev_drop_task(ev_listener);
+        return listener();
     }
     return t;
 }
 
 /* Append 'ev' to t's queue (drop when full) and wake t if it is blocked.
  * Called with interrupts disabled (IRQ handler or cli section). */
+static int evq_full(task_t *t) {
+    return t->ev_head - t->ev_tail >= TASK_EVQ_SIZE;
+}
+
 static void evq_push(task_t *t, const uevent_t *ev) {
-    if (t->ev_head - t->ev_tail < TASK_EVQ_SIZE) {
+    if (!evq_full(t)) {
         t->evq[t->ev_head % TASK_EVQ_SIZE] = *ev;
         t->ev_head++;
     }
     if (t->state == TASK_BLOCKED) t->state = TASK_READY;
 }
 
-int task_event_key(char c) {
+int task_event_room(void) {
     task_t *t = listener();
     if (!t) return 0;
+    int used = (int) (t->ev_head - t->ev_tail);
+    return TASK_EVQ_SIZE - used;
+}
+
+int task_event_key(char c) {
+    task_t *t = listener();
+    if (!t || !listener_gets_input(t) || evq_full(t)) return 0;
     uevent_t ev;
     ev.type = UEV_KEY;
     ev.x = ev.y = 0;
@@ -482,7 +689,7 @@ int task_event_key(char c) {
 
 int task_event_mouse(int32_t x, int32_t y, uint32_t buttons) {
     task_t *t = listener();
-    if (!t) return 0;
+    if (!t || !listener_gets_input(t)) return 0;
     /* Coalesce pure motion: update the newest unread mouse event in place
      * when its button state matches, so motion never floods the queue. */
     if (t->ev_head != t->ev_tail) {
@@ -541,4 +748,37 @@ int task_event_wait(uevent_t *out, uint32_t timeout) {
          * timer made us READY again. */
         schedule();
     }
+}
+
+void task_set_break(int id, uint32_t brk) {
+    if (id <= 0 || id >= MAX_TASKS) return;
+    tasks[id].brk_base = brk;
+    tasks[id].brk = brk;
+}
+
+uint32_t task_brk(uint32_t want) {
+    if (!current || !current->is_user || current->brk_base == 0)
+        return (uint32_t) -1;
+    if (want == 0) return current->brk;
+    if (want < current->brk_base) return (uint32_t) -1;
+    if (want - current->brk_base > USER_HEAP_MAX) return (uint32_t) -1;
+    if (want > USER_PROG_LIMIT) return (uint32_t) -1;
+
+    uint32_t from = (current->brk + 0xFFFu) & ~0xFFFu;
+    uint32_t to = (want + 0xFFFu) & ~0xFFFu;
+    if (want > current->brk) {
+        for (uint32_t a = from; a < to; a += PAGE_SIZE) {
+            uint32_t f = frame_alloc();
+            if (!f) return (uint32_t) -1;
+            memory_set((uint8_t *) f, 0, PAGE_SIZE);
+            if (vmm_map(current->page_dir, a, f,
+                        PAGE_PRESENT | PAGE_RW | PAGE_USER) != 0) {
+                frame_free(f);
+                return (uint32_t) -1;
+            }
+        }
+        load_page_directory((uint32_t *) current->page_dir);
+    }
+    current->brk = want;
+    return current->brk;
 }

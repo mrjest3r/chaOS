@@ -23,6 +23,9 @@
 #define UEV_KEY_END   0x14
 #define UEV_KEY_UP    0x15
 #define UEV_KEY_DOWN  0x16
+/* Above the Ctrl-letter range so a page key is not a control byte. */
+#define UEV_KEY_PGUP  0x80
+#define UEV_KEY_PGDN  0x81
 
 /* Timeout argument: 0 = poll and return at once, UEV_FOREVER = block. */
 #define UEV_FOREVER 0xFFFFFFFFu

@@ -2,15 +2,19 @@
 #include "fs.h"
 #include "kheap.h"
 #include "task.h"
+#include "shell.h"
 #include "../cpu/arch.h"
 #include "../libc/mem.h"
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/idle.h"
 
 /* A statically-linked ELF executable places each PT_LOAD segment at a fixed
  * virtual address (USER_BASE). Every program is loaded into its own address
  * space, so many can run at once at the same virtual address, fully isolated
  * from each other and from the kernel. */
+
+static uint32_t loaded_brk;
 
 static int seg_in_user_region(uint32_t vaddr, uint32_t memsz) {
     if (vaddr < USER_BASE) return 0;
@@ -37,11 +41,13 @@ int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *ent
     }
 
     /* Walk the program headers and load every PT_LOAD segment. */
+    loaded_brk = USER_BASE;
     for (int i = 0; i < eh->e_phnum; i++) {
         const Elf32_Phdr *ph =
             (const Elf32_Phdr *) (data + eh->e_phoff + (uint32_t) i * eh->e_phentsize);
 
         if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_memsz == 0) continue; /* empty data PHDR (no .data/.bss) */
         if (ph->p_filesz > ph->p_memsz) return -6;
         if (ph->p_offset + ph->p_filesz > size) return -7;
         if (ph->p_vaddr & 0xFFFu) return -8;                 /* page-aligned only */
@@ -62,12 +68,18 @@ int elf_load_into(uint32_t pd, const uint8_t *data, uint32_t size, uint32_t *ent
                             (uint8_t *) frame, (int) tocopy);
             }
 
-            if (vmm_map(pd, ph->p_vaddr + off, frame,
-                        PAGE_PRESENT | PAGE_RW | PAGE_USER) != 0) {
+            /* Honour p_flags: text/rodata stay user-readable, not writable.
+             * 32-bit paging has no NX bit, so RX still executes. */
+            uint32_t prot = PAGE_PRESENT | PAGE_USER;
+            if (ph->p_flags & PF_W) prot |= PAGE_RW;
+            if (vmm_map(pd, ph->p_vaddr + off, frame, prot) != 0) {
                 return -21;
             }
         }
+        uint32_t end = ph->p_vaddr + ph->p_memsz;
+        if (end > loaded_brk) loaded_brk = end;
     }
+    loaded_brk = (loaded_brk + 0xFFFu) & ~0xFFFu;
 
     if (!seg_in_user_region(eh->e_entry, 1)) return -10;
 
@@ -141,12 +153,14 @@ int elf_spawn_io(const char *path, int stdin_pipe, int stdout_pipe) {
      * to still malloc a 32 KiB buffer; under memory pressure that could leave
      * the kernel in a bad state before the obvious error was reported. */
     if (!fs_exists(name)) return -101;
+    int sz = fs_size(name);
+    if (sz <= 0 || (uint32_t) sz > FS_MAX_FILESIZE) return -101;
 
     /* Read the whole file into a temporary heap buffer. */
-    uint8_t *buf = (uint8_t *) malloc(FS_MAX_FILESIZE);
+    uint8_t *buf = (uint8_t *) malloc((uint32_t) sz);
     if (!buf) return -100;
 
-    int n = fs_read_file(name, buf, FS_MAX_FILESIZE);
+    int n = fs_read_file(name, buf, (uint32_t) sz);
     if (n < 0) {
         free(buf);
         return -101;
@@ -193,6 +207,8 @@ int elf_spawn_io(const char *path, int stdin_pipe, int stdout_pipe) {
     /* Runs before the child can be scheduled: callers reach here from the
      * syscall gate (IF=0) or from the kernel shell, which never redirects. */
     if (stdin_pipe >= 0 || stdout_pipe >= 0) task_set_io(id, stdin_pipe, stdout_pipe);
+    task_set_name(id, name);
+    task_set_break(id, loaded_brk);
     return id;
 }
 
@@ -205,14 +221,28 @@ int elf_exec(const char *path) {
         return id;
     }
 
-    /* Foreground program: it owns the keyboard until it exits. */
-    kbd_set_focus(KBD_FOCUS_PROGRAM);
+    /* Foreground program owns the keyboard until it exits. The console
+     * override flag can still peel the kernel shell over it (nothing on
+     * the desk sets that flag; F1 does not). shell_poll runs here because
+     * kernel_main is blocked inside this wait. */
+    int prev_fg = task_foreground();
+    task_set_foreground(id);
+    if (!kbd_console_override())
+        kbd_set_focus(KBD_FOCUS_PROGRAM);
 
-    /* Idle until the program terminates; the timer keeps preempting us so it
-     * actually runs (and any other tasks keep making progress too). */
-    while (task_alive(id)) asm volatile("hlt");
+    while (task_alive(id)) {
+        if (kbd_console_override()) {
+            shell_poll();
+            idle_poll();
+        }
+        asm volatile("hlt");
+    }
 
+    task_set_foreground(prev_fg);
     kbd_set_focus(KBD_FOCUS_SHELL);
+    /* Top-level program left. Drop F1 so the next GUI program can paint. */
+    if (prev_fg < 0)
+        kbd_set_console_override(0);
     /* Reap DEAD slot and ensure we are back on the kernel page directory. */
     task_reap();
     if (kernel_directory) {

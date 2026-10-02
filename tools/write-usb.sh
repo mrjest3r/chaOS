@@ -13,7 +13,7 @@ if [[ -z "$DEV" ]]; then
   exit 1
 fi
 if [[ ! -f "$IMG" ]]; then
-  echo "missing $IMG — run: make clean && make iso" >&2
+  echo "missing $IMG — run: make chaos.flp" >&2
   exit 1
 fi
 if [[ ! -b "$DEV" ]]; then

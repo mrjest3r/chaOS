@@ -10,6 +10,17 @@ void utext_clear(utext_t *t) {
     t->cx = t->cy = 0;
     t->hist_n = 0;
     t->view = 0;
+    t->esc_st = 0;
+    t->esc_a = t->esc_b = 0;
+    t->esc_semi = 0;
+}
+
+static void clear_live(utext_t *t) {
+    for (int r = 0; r < t->rows; r++)
+        for (int c = 0; c < t->cols; c++) t->cell[r][c] = ' ';
+    t->cx = t->cy = 0;
+    t->view = 0;
+    t->esc_st = 0;
 }
 
 void utext_init(utext_t *t, int cols, int rows) {
@@ -41,6 +52,15 @@ static void scroll_up(utext_t *t) {
     for (int c = 0; c < t->cols; c++) t->cell[t->rows - 1][c] = ' ';
 }
 
+static void move_cells(utext_t *t, int delta) {
+    int pos = t->cy * t->cols + t->cx + delta;
+    int max = t->rows * t->cols - 1;
+    if (pos < 0) pos = 0;
+    if (pos > max) pos = max;
+    t->cy = pos / t->cols;
+    t->cx = pos % t->cols;
+}
+
 static void newline(utext_t *t) {
     t->cx = 0;
     if (++t->cy >= t->rows) {
@@ -49,26 +69,82 @@ static void newline(utext_t *t) {
     }
 }
 
-void utext_feed(utext_t *t, const char *buf, int n) {
-    for (int i = 0; i < n; i++) {
-        char c = buf[i];
-        if (c == '\n') {
-            newline(t);
-        } else if (c == '\r') {
-            t->cx = 0;
-        } else if (c == '\b') {
-            if (t->cx > 0) t->cx--;
-            else if (t->cy > 0) { t->cy--; t->cx = t->cols - 1; }
-            t->cell[t->cy][t->cx] = ' ';
-        } else if (c == '\t') {
-            int next = (t->cx + 4) & ~3;
-            while (t->cx < next && t->cx < t->cols) t->cell[t->cy][t->cx++] = ' ';
-            if (t->cx >= t->cols) newline(t);
-        } else if (c >= 32 && c <= 126) {
-            t->cell[t->cy][t->cx++] = c;
-            if (t->cx >= t->cols) newline(t);
+static void feed_byte(utext_t *t, unsigned char c) {
+    if (t->esc_st == 1) {
+        if (c == '[') {
+            t->esc_st = 2;
+            t->esc_a = t->esc_b = 0;
+            t->esc_semi = 0;
+        } else {
+            t->esc_st = 0;
         }
+        return;
     }
+    if (t->esc_st == 2) {
+        if (c >= '0' && c <= '9') {
+            int *d = t->esc_semi ? &t->esc_b : &t->esc_a;
+            *d = *d * 10 + (int) (c - '0');
+            if (*d > 99) *d = 99;
+            return;
+        }
+        if (c == ';') {
+            t->esc_semi = 1;
+            return;
+        }
+        if (c == 'H' || c == 'f') {
+            int row = t->esc_a > 0 ? t->esc_a - 1 : 0;
+            int col = t->esc_b > 0 ? t->esc_b - 1 : 0;
+            if (row >= t->rows) row = t->rows - 1;
+            if (row < 0) row = 0;
+            if (col >= t->cols) col = t->cols - 1;
+            if (col < 0) col = 0;
+            t->cy = row;
+            t->cx = col;
+            t->view = 0;
+        } else if (c == 'J' && t->esc_a == 2) {
+            clear_live(t);
+        } else if (c == 'D' || c == 'C') {
+            int n = t->esc_a > 0 ? t->esc_a : 1;
+            move_cells(t, c == 'C' ? n : -n);
+        } else if (c == 'S' || c == 'T') {
+            int n = t->esc_a > 0 ? t->esc_a : 1;
+            utext_scroll(t, c == 'S' ? n : -n);
+        }
+        t->esc_st = 0;
+        return;
+    }
+    if (c == 27) {
+        t->esc_st = 1;
+        return;
+    }
+    if (c == '\f') {
+        clear_live(t);
+        return;
+    }
+    if (c == '\n') {
+        t->view = 0;
+        newline(t);
+    } else if (c == '\r') {
+        t->view = 0;
+        t->cx = 0;
+    } else if (c == '\b') {
+        t->view = 0;
+        if (t->cx > 0) t->cx--;
+        else if (t->cy > 0) { t->cy--; t->cx = t->cols - 1; }
+        t->cell[t->cy][t->cx] = ' ';
+    } else if (c == '\t') {
+        int next = (t->cx + 4) & ~3;
+        while (t->cx < next && t->cx < t->cols) t->cell[t->cy][t->cx++] = ' ';
+        if (t->cx >= t->cols) newline(t);
+    } else if (c >= 32 && c <= 126) {
+        t->view = 0;
+        t->cell[t->cy][t->cx++] = c;
+        if (t->cx >= t->cols) newline(t);
+    }
+}
+
+void utext_feed(utext_t *t, const char *buf, int n) {
+    for (int i = 0; i < n; i++) feed_byte(t, (unsigned char) buf[i]);
 }
 
 void utext_scroll(utext_t *t, int delta) {
