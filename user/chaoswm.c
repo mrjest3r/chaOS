@@ -59,8 +59,8 @@ typedef struct {
 } desk_icon_t;
 
 static const desk_icon_t desk_icons[] = {
-    { "terminal", "terminal.elf", ">_", 2 },
-    { "doom", "doom.elf", "D", 2 },
+    { "terminal", "bin/terminal.elf", ">_", 2 },
+    { "doom", "bin/doom.elf", "D", 2 },
 };
 #define N_ICONS ((int) (sizeof desk_icons / sizeof desk_icons[0]))
 
@@ -85,6 +85,7 @@ typedef struct {
     /* client (G4): pid and the two console pipes; -1 = none */
     int pid, in, out;
     int sx;            /* glyph scale 1 or 2 (G5) */
+    int full;          /* graphical client covers the desk */
     utext_t text;
 } win_t;
 
@@ -181,6 +182,49 @@ static void icon_place(int i, int *x, int *y) {
     *y = BAR_H + 16 + row * 68;
 }
 
+/* The 1993 title wordmark: heavy D, two round O's, an M whose center
+ * stops short of the baseline. Drawn 1:1 on a black plate. */
+static const char *doom_art[] = {
+    " ###     ###    ###   #   #",
+    "######  #####  #####  ## ##",
+    "##   # ##   # ##   # ## # #",
+    "##   # ##   # ##   # ## # #",
+    "##   # ##   # ##   # ## # #",
+    "##     ##   # ##   # ## # #",
+    "##     ##   # ##   # ##   #",
+    "##     ##   # ##   # ##   #",
+    "##     ##   # ##   # ##   #",
+    "##   # ##   # ##   # ##   #",
+    "##   # ##   # ##   # ##   #",
+    "##   # ##   # ##   # ##   #",
+    "######  #####  #####  ##   #",
+    " ###     ###    ###   #    #"
+};
+
+static void draw_doom_logo(int x, int y) {
+    int minc = 99, maxc = 0;
+    for (int row = 0; row < 14; row++) {
+        const char *line = doom_art[row];
+        for (int col = 0; line[col]; col++) {
+            if (line[col] != '#') continue;
+            if (col < minc) minc = col;
+            if (col > maxc) maxc = col;
+        }
+    }
+    int aw = maxc - minc + 1;
+    int ox = x + (ICON_PLATE_W - aw) / 2 - minc;
+    int oy = y + (ICON_PLATE_H - 14) / 2;
+    ugfx_fill(&back, x + 2, y + 2, ICON_PLATE_W - 4, ICON_PLATE_H - 4, 0x00000000u);
+    for (int row = 0; row < 14; row++) {
+        const char *line = doom_art[row];
+        for (int col = 0; line[col]; col++) {
+            if (line[col] != '#') continue;
+            uint32_t color = row < 2 ? 0x00FF3810u : 0x00C81010u;
+            ugfx_fill(&back, ox + col, oy + row, 1, 1, color);
+        }
+    }
+}
+
 static void draw_icons(void) {
     for (int i = 0; i < N_ICONS; i++) {
         int x, y;
@@ -190,8 +234,11 @@ static void draw_icons(void) {
         ugfx_fill(&back, x, y + ICON_PLATE_H - 2, ICON_PLATE_W, 2, pal_chip_on);
         ugfx_fill(&back, x, y, 2, ICON_PLATE_H, pal_chip_on);
         ugfx_fill(&back, x + ICON_PLATE_W - 2, y, 2, ICON_PLATE_H, pal_chip_on);
-        ugfx_text(&back, x + 8, y + 10, desk_icons[i].glyph,
-                  pal_term_fg, pal_term_bg, 1, 2);
+        if (desk_icons[i].label[0] == 'd')
+            draw_doom_logo(x, y);
+        else
+            ugfx_text(&back, x + 8, y + 10, desk_icons[i].glyph,
+                      pal_term_fg, pal_term_bg, 1, 2);
         ugfx_text(&back, x, y + 40, desk_icons[i].label,
                   pal_hint, pal_desk, 1, 1);
     }
@@ -211,7 +258,8 @@ static int icon_at(int mx, int my) {
     for (int i = 0; i < N_ICONS; i++) {
         int x, y;
         icon_place(i, &x, &y);
-        if (mx >= x && mx < x + ICON_HIT_W && my >= y && my < y + ICON_HIT_H)
+        int hit_w = desk_icons[i].label[0] == 'd' ? 48 : ICON_HIT_W;
+        if (mx >= x && mx < x + hit_w && my >= y && my < y + ICON_HIT_H)
             return i;
     }
     return -1;
@@ -282,6 +330,7 @@ static int summon_win(const char *title, int x, int y, int w, int h,
     wins[i].title_bg = tbg;
     wins[i].pid = wins[i].in = wins[i].out = -1;
     wins[i].sx = 1;
+    wins[i].full = 0;
     cpy(wins[i].title, title, (int) sizeof(wins[i].title));
     focus = i;
     return i;
@@ -306,6 +355,48 @@ static void client_geom(int sx, int *bw, int *bh) {
     if (sx > 2) sx = 2;
     *bw = TERM_COLS * 8 * sx + TERM_PAD * 2;
     *bh = TERM_ROWS * 8 * sx + TERM_PAD * 2 + TITLE_H;
+}
+
+static int same_str(const char *a, const char *b);
+
+static void blit_frame(win_t *w, int x, int y);
+
+static int is_gfx(const win_t *w) {
+    return w->state == W_ALIVE && w->pid >= 0 && w->in < 0;
+}
+
+static void own_keys(void) {
+    frame_req_t r;
+    unsigned char *p = (unsigned char *) &r;
+    for (unsigned i = 0; i < sizeof r; i++) p[i] = 0;
+    r.op = FRAME_KEYS;
+    r.pid = ugetpid();
+    if (!cmd_mode && focus >= 0 && is_gfx(&wins[focus]))
+        r.pid = wins[focus].pid;
+    uframe(&r);
+}
+
+static int summon_gfx(const char *prog, const char *title) {
+    for (int i = 0; i < MAX_WIN; i++) {
+        if (!is_gfx(&wins[i])) continue;
+        if (!same_str(wins[i].title, title)) continue;
+        focus = i;
+        cmd_mode = 0;
+        own_keys();
+        return i;
+    }
+    int pid = uspawn(prog);
+    if (pid < 0) return -1;
+    int i = summon_win(title, 90, 36, 640, 400 + TITLE_H, 0, 0x00000000u, 0x00201010u);
+    if (i < 0) {
+        upsctl(pid, PSOP_SLAY);
+        return -1;
+    }
+    wins[i].pid = pid;
+    wins[i].full = 0;
+    cmd_mode = 0;
+    own_keys();
+    return i;
 }
 
 static int summon_client(const char *cmdline, const char *title, int n, int sx) {
@@ -395,6 +486,12 @@ static int drain_clients(void) {
     return dirty;
 }
 
+static int gfx_pending(void) {
+    for (int i = 0; i < MAX_WIN; i++)
+        if (is_gfx(&wins[i])) return 1;
+    return 0;
+}
+
 static int clients_pending(void) {
     for (int i = 0; i < MAX_WIN; i++)
         if (wins[i].state != W_FREE && wins[i].out >= 0) return 1;
@@ -411,7 +508,10 @@ static void send_key(win_t *w, char c) {
 static void banish_focus(void) {
     if (focus < 0 || wins[focus].state != W_ALIVE) return;
     win_t *w = &wins[focus];
-    if (w->in >= 0) {
+    if (is_gfx(w)) {
+        upsctl(w->pid, PSOP_SLAY);
+        w->state = W_FREE;
+    } else if (w->in >= 0) {
         hangup(w);
         w->state = W_CLOSING;   /* hidden until stdout reaches EOF */
     } else {
@@ -480,7 +580,10 @@ static void draw_win(int i) {
     ugfx_fill(&back, x + sk - 2, y + th - 2, tw + 4, bh + 4, border);
     ugfx_fill(&back, x + sk, y + th, tw, bh, w->body);
 
-    if (has_client(w)) {
+    if (is_gfx(w)) {
+        blit_frame(w, x + sk, y + th);
+        ugfx_text(&back, x + tw - 36, y + 2, "full", 0x00FFCC66u, w->title_bg, 1, 1);
+    } else if (has_client(w)) {
         int sx = w->sx < 1 ? 1 : w->sx;
         utext_draw(&w->text, &back, x + sk + TERM_PAD, y + th + TERM_PAD,
                    pal_term_fg, pal_term_bg, sx, sx, focused && !cmd_mode && w->text.view == 0);
@@ -491,7 +594,44 @@ static void draw_win(int i) {
     }
 }
 
+static void blit_frame(win_t *w, int x, int y) {
+    frame_req_t fr;
+    unsigned char *zp = (unsigned char *) &fr;
+    for (unsigned i = 0; i < sizeof fr; i++) zp[i] = 0;
+    fr.op = FRAME_PLACE;
+    fr.pid = w->pid;
+    fr.x = x;
+    fr.y = y;
+    /* PLACE fails once the program has exited. Before the first publish,
+     * BLIT succeeds and the body stays the color it was filled with. */
+    if (uframe(&fr) != 0) {
+        int slot = (int) (w - wins);
+        w->state = W_FREE;
+        if (focus == slot) {
+            pick_focus();
+            cmd_mode = 1;
+            own_keys();
+        }
+        return;
+    }
+    fr.op = FRAME_BLIT;
+    fr.ptr = (uint32_t) back.px;
+    fr.w = scr_w;
+    fr.h = scr_h;
+    uframe(&fr);
+}
+
 static void redraw(void) {
+    if (focus >= 0 && is_gfx(&wins[focus]) && wins[focus].full) {
+        ugfx_clear(&back, 0x00000000u);
+        int cx = scr_w > 640 ? (scr_w - 640) / 2 : 0;
+        int cy = scr_h > 400 ? (scr_h - 400) / 2 : 0;
+        blit_frame(&wins[focus], cx, cy);
+        ugfx_fill(&back, 4, 4, 56, 14, 0x00201010u);
+        ugfx_text(&back, 8, 6, "window", 0x00FFCC66u, 0x00201010u, 1, 1);
+        ugfx_present(&back, 0, 0);
+        return;
+    }
     ugfx_clear(&back, pal_desk);
     layout_bar();
     ugfx_fill(&back, 0, 0, scr_w, BAR_H, pal_bar);
@@ -548,13 +688,10 @@ static int same_str(const char *a, const char *b) {
 
 static void launch_desk_icon(int i) {
     if (i < 0 || i >= N_ICONS) return;
-    /* Doom draws on the framebuffer, which the desk would paint over.
-     * Leave the desk, let the kernel run it, then come back. */
-    if (same_str(desk_icons[i].prog, "doom.elf")) {
-        char one[1];
-        one[0] = '1';
-        uwritefile("launchdoom", one, 1);
-        quit();
+    /* A graphical program stays in a window on this desk. */
+    if (same_str(desk_icons[i].label, "doom")) {
+        summon_gfx(desk_icons[i].prog, desk_icons[i].label);
+        return;
     }
     summon_client(desk_icons[i].prog, desk_icons[i].label,
                   ++n_summoned, desk_icons[i].scale);
@@ -581,6 +718,10 @@ static void handle_command(char c) {
         case 'b': case 'B': banish_focus(); break;
         case 'n': case 'N': case '\t': next_focus(); break;
         case '2':           toggle_scale(); break;
+        case 'f': case 'F':
+            if (focus >= 0 && is_gfx(&wins[focus]))
+                wins[focus].full = !wins[focus].full;
+            break;
         case '+': case '=': if (chaos < 9) chaos++; break;
         case '-': case '_': if (chaos > 0) chaos--; break;
         case 27:            if (focused_client()) cmd_mode = 0; break;
@@ -608,8 +749,15 @@ static void handle_key(char c) {
         redraw();
         return;
     }
-    if (cmd_mode || !focused_client()) {
+    if (cmd_mode || (!focused_client() && !(focus >= 0 && is_gfx(&wins[focus])))) {
         handle_command(c);
+        own_keys();
+        return;
+    }
+    if (focus >= 0 && is_gfx(&wins[focus])) {
+        if (c == 27) cmd_mode = 1;
+        own_keys();
+        redraw();
         return;
     }
     if (c == 27) {
@@ -625,12 +773,29 @@ static void handle_mouse(const uevent_t *m) {
     int prev = (int) (prev_btns & 1u);
     int th = 0;
 
+    /* Fullscreen covers the desk. The only desk click is the "window" chip;
+     * anything else belongs to the game, which reads the pointer itself. */
+    if (focus >= 0 && is_gfx(&wins[focus]) && wins[focus].full) {
+        if (down && !prev && m->x < 64 && m->y < 20) {
+            wins[focus].full = 0;
+            redraw();
+        }
+        prev_btns = m->buttons;
+        return;
+    }
     if (down && !prev) {
         if (toolbar_click(m->x, m->y)) return;
         int hit = hit_test(m->x, m->y, &th);
         if (hit >= 0) {
             focus = hit;
-            cmd_mode = has_client(&wins[hit]) ? 0 : 1;
+            cmd_mode = (has_client(&wins[hit]) || is_gfx(&wins[hit])) ? 0 : 1;
+            own_keys();
+            if (th && is_gfx(&wins[hit]) &&
+                m->x >= wins[hit].x + wins[hit].w - 40) {
+                wins[hit].full = !wins[hit].full;
+                redraw();
+                return;
+            }
             if (th) {
                 drag = focus;
                 drag_ox = m->x - wins[focus].x;
@@ -679,7 +844,7 @@ void main(void) {
     for (;;) {
         uevent_t ev;
         uint32_t timeout = UEV_FOREVER;
-        if (clients_pending()) timeout = CLIENT_TICKS;
+        if (clients_pending() || gfx_pending()) timeout = CLIENT_TICKS;
         else if (chaos > 0) timeout = JITTER_TICKS;
 
         int r = uevent_wait(&ev, timeout);
@@ -695,6 +860,7 @@ void main(void) {
         }
 
         int dirty = drain_clients();
+        if (gfx_pending()) dirty = 1;
         uint32_t now = uuptime();
         if (chaos > 0 && now - last_jitter >= JITTER_TICKS) {
             last_jitter = now;

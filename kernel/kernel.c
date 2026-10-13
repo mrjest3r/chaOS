@@ -87,9 +87,11 @@ void kernel_main() {
 
     if (!fs_mount())
         serial_write("[fs] mount failed\n");
-    else
+    else {
         serial_write(fs_is_ram() ? "[fs] no IDE disk - RAM filesystem\n"
                                  : "[fs] IDE disk mounted\n");
+        fs_organize();
+    }
     seed_from_initrd();
 
 #ifdef AUTOTEST
@@ -113,26 +115,15 @@ void kernel_main() {
     /* The desk does not return here on q or F1. This shell runs when
      * there is no framebuffer, or if the compositor exits.
      * gate asks for a username and a password before the desk. */
-    if (fs_exists("gate.elf")) {
+    if (fs_exists("bin/gate.elf")) {
         serial_write("[boot] gate\n");
-        elf_exec("gate.elf");
+        elf_exec("bin/gate.elf");
     }
-    /* Clicking the doom icon writes "launchdoom" and leaves the desk.
-     * Run the game here, then start the desk again. */
-    for (;;) {
-        if (fs_exists("launchdoom") && fs_exists("doom.elf")) {
-            fs_delete("launchdoom");
-            serial_write("[boot] doom\n");
-            elf_exec("doom.elf");
-            continue;
-        }
-        if (fb_available() && fs_exists("chaoswm.elf")) {
-            serial_write("[boot] desk\n");
-            elf_exec("chaoswm.elf");
-            if (fs_exists("launchdoom"))
-                continue;
-        }
-        break;
+    /* The desk stays up. A graphical program publishes a frame and the
+     * compositor copies it into a window, including a fullscreen one. */
+    if (fb_available() && fs_exists("bin/chaoswm.elf")) {
+        serial_write("[boot] desk\n");
+        elf_exec("bin/chaoswm.elf");
     }
 
     clear_screen();
@@ -151,11 +142,11 @@ void kernel_main() {
     if (fb_available())
         kprint("Framebuffer console active. Type 'fbdemo' for a graphics demo.\n");
     if (mouse_available())
-        kprint("PS/2 mouse active. Type 'mouse' or 'exec mousedemo.elf'.\n");
+        kprint("PS/2 mouse active. Type 'mouse' or 'exec bin/mousedemo.elf'.\n");
     kprint("No desk: this kernel shell is only here without a framebuffer.\n");
     kprint("On a framebuffer boot, open the terminal chip. q and F1 stay on the desk.\n");
     kprint("Idle: 'doze' blanks the display; key or mouse wakes it.\n");
-    kprint("Type 'help' for commands, or 'exec greet.elf' to talk to a program.\n");
+    kprint("Type 'help' for commands, or 'exec bin/greet.elf' to talk to a program.\n");
     kprint("PgUp/PgDn scroll console history.\n");
     shell_prompt();
 

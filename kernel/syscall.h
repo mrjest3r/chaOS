@@ -3,7 +3,7 @@
 
 /* System call numbers (passed in eax). Arguments go in ebx, ecx, edx and the
  * return value comes back in eax.
- * ABI version 10 — keep in sync with docs/agent/ABI.md; bump when changing. */
+ * ABI version 11 — keep in sync with docs/agent/ABI.md; bump when changing. */
 #define SYS_PRINT     0  /* ebx = char*                                   */
 #define SYS_EXIT      1  /* returns to kernel                             */
 #define SYS_GETPID    2  /* -> eax = current task id                      */
@@ -38,6 +38,9 @@
 #define SYS_POWER     29 /* ebx = PWOP_*; does not return on success          */
 #define SYS_CLOCK     30 /* ebx = uclock_t* -> 0 / -1                         */
 #define SYS_BRK       31 /* ebx = new break, 0 = query -> break / -1           */
+#define SYS_KEYEVT    32 /* -> (pressed<<8)|scancode, or -1 if none            */
+#define SYS_AUDIO     33 /* ebx = int16 stereo, ecx = frames -> 0 / -1        */
+#define SYS_FRAME     34 /* ebx = frame_req_t* -> 0 / -1                      */
 
 /* Registers the int 0x80 handler. */
 void syscall_init();

@@ -123,31 +123,30 @@ before P5.1 targets the SDK at a final ABI. G4+ is userspace only.
 - `chaoswm` long-lived; clients get a surface + pipe; skew stays in the compositor.
 - Exit: `folio` or `scribe` runs inside a chaoswm window.
 - Done as: console-over-pipes (`SYS_SPAWNIO` / `SYS_PIPEPOLL`, ABI v7) + `user/utext.c`
-  text grid; text apps run unchanged. Pixel clients (a surface shared with the
-  compositor) are not needed for the text-centric deck — revisit only if a
-  graphical client appears.
+  text grid; text apps run unchanged. A graphical client publishes pixels with
+  `SYS_FRAME` (ABI v11); Doom is that client.
 
 ### G5 Text widget + terminal window
-- `utext` exists from G4; this step: `ush` in a window (verbs `summon`/`folio`/`scribe`
-  spawn into the same window via inherited pipes), larger 2× text scale option,
-  scrollback in the grid, kernel console = fallback via hotkey.
-- Done as: chaoswm `u` → `ush.elf` at 2× via `SYS_SPAWNIO`; children inherit
-  pipes (G4); `utext` history ring + Up/Down; `2` toggles 1×/2×; F1 kernel
-  override swallows compositor blits and gives the shell the keyboard.
+- `utext` exists from G4. The shipped shell is `terminal.elf` (not `ush`).
+  Scrollback lives in the grid. There is no hotkey back to the kernel console.
+- Done as: the desk icon `terminal` (or `t`) summons `terminal.elf` at 2× via
+  `SYS_SPAWNIO`. `utext` history plus Up/Down; `2` toggles 1×/2×. `q` and F1
+  do not leave the desk.
 
 ### G6 Deck identity
 - Boot into compositor; palette per `attune` mode; toolbar of verbs.
 - Done as: interactive `kernel_main` execs `chaoswm.elf` when the LFB is up
-  (`[boot] desk` on COM1; `q` returns to the kernel shell; F1 still overlays).
-  Shared `attune` file (`user/attune.h`) drives ush + chaoswm palettes
-  (deck / notes / code). Top bar is a clickable verb toolbar; `a` cycles
-  modes. `run_desk_selftest` checks the file round-trip.
+  (`[boot] desk` on COM1). `q` and F1 do not return to the kernel shell.
+  Shared `attune` file (`user/attune.h`) drives the terminal and chaoswm
+  palettes (deck / notes / code). Top bar is mode chips; `a` cycles modes.
+  `run_desk_selftest` checks the file round-trip.
 
 ### G7 Freeze for hardware
 - Pick the board's VBE mode; record in `BRINGUP.md`.
-- Done as: **800×600×32** (VBE 0x115 + LFB) is the frozen desk mode.
-  Fallbacks 1024×768×32 / 640×480×32 then VGA text. Recorded in
-  `docs/agent/BRINGUP.md` § G7. ABI unchanged.
+- Done as: **800×600×32** is the frozen desk mode. The BIOS is tried first
+  (0x115, then 0x118, then 0x112). If that fails, Bochs DISPI sets the same
+  mode. VGA text remains only when both fail. Recorded in
+  `docs/agent/BRINGUP.md` § G7.
 
 ---
 

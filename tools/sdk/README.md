@@ -22,15 +22,18 @@ The toolchain is `i386-elf-gcc` / `i386-elf-ld` / `nasm`. If they are not in
 
 ## What the command will refuse
 
-The filesystem stores at most 1 MiB under a name of at most 23 characters.
-The volume is about 1 GiB. A program and its heap live in a 64 MiB window;
-`SYS_BRK` allows 32 MiB of heap.
-`make sdk` prints the size and stops when the ELF is larger. There is no
-libc and no heap syscall. A program and its globals must also fit in the
-64 MiB user window (`USER_PROG_LIMIT` in `cpu/vmm.h`).
+`make sdk` stops when the ELF is over 1 MiB or the name is longer than 23
+characters. That 1 MiB limit is the tool, not the filesystem. A disk file
+may be 32 MiB (`FS_MAX_FILESIZE`). The volume is about 1 GiB and holds
+10000 names.
 
-Doom does not install. The engine is a hosted C program (libc, files) and the
-shareware WAD is larger than one file.
+A program and its heap live in a 64 MiB window (`USER_BASE` through
+`USER_STACK_TOP`). `SYS_BRK` grows the heap by at most 48 MiB
+(`USER_HEAP_MAX` in `cpu/vmm.h`). There is no hosted libc. Programs that
+need one cannot be built this way.
+
+Doom does not install through `make sdk`. The engine is hosted C. The WAD
+fits one filesystem file (under 32 MiB) and is placed on the disk by hand.
 
 ## Boot image vs disk
 

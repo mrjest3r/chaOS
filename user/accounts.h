@@ -13,8 +13,8 @@
 #define ACCT_NAME     16
 #define ACCT_PASS     32
 #define ACCT_MAX      8
-#define ACCOUNTS_FILE "accounts"
-#define SESSION_FILE  "session"
+#define ACCOUNTS_FILE "sys/accounts"
+#define SESSION_FILE  "sys/session"
 
 typedef struct {
     char name[ACCT_NAME];

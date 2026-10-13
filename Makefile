@@ -87,6 +87,19 @@ run: os-image.bin disk.img programs
 chaos.flp: os-image.bin
 	cp os-image.bin chaos.flp
 
+# CD for VirtualBox. El Torito floppy emulation (fd1.4): the BIOS presents
+# chaos.flp as drive 0x00, which is the geometry boot/disk.asm already uses.
+# Do not pass -no-emul-boot (2048-byte CD sectors) or -boot-info-table (it
+# patches the boot sector). Firmware must be BIOS, not EFI.
+chaos.iso: chaos.flp
+	rm -rf isodir
+	mkdir isodir
+	cp chaos.flp isodir/chaos.flp
+	xorriso -as mkisofs -o $@ -V CHAOS -b chaos.flp -c boot.cat isodir
+	rm -rf isodir
+	@xorriso -indev $@ -report_el_torito plain 2>/dev/null | grep -q fd1.4 || \
+	  { echo "error: chaos.iso is not a 1.44 MB El Torito floppy"; exit 1; }
+
 # VirtualBox helper: floppy + IDE disk. Optional MAKE_VBOX_VM=1 registers a VM.
 vbox: chaos.flp
 	$(MAKE) -s vbox-disk
@@ -151,6 +164,10 @@ test-ram: clean os-image.bin
 # terminal.elf must stay within one filesystem slot (32 KiB). -Os keeps the
 # directory verbs inside that budget; the pattern rule would not.
 user/terminal.o: user/terminal.c user/ulib.h user/verbs.h user/accounts.h user/ugfx.h user/utext.h user/attune.h kernel/syscall.h kernel/fb_user.h kernel/event_user.h
+	${CC} ${UFLAGS} -Os -c $< -o $@
+
+# The desk must stay inside the initrd file cap (32 KiB).
+user/chaoswm.o: user/chaoswm.c user/ulib.h user/ugfx.h user/utext.h user/attune.h kernel/syscall.h kernel/fb_user.h kernel/event_user.h kernel/frame_user.h
 	${CC} ${UFLAGS} -Os -c $< -o $@
 
 user/%.o: user/%.c user/ulib.h user/ugfx.h user/utext.h user/attune.h kernel/syscall.h kernel/fb_user.h kernel/event_user.h

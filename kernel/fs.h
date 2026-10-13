@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define FS_NAME_LEN     24
-#define FS_MAX_FILES    32
+#define FS_MAX_FILES    10000 /* directory block, not the 32-slot superblock */
 #define FS_MAX_FILESIZE (32u * 1024u * 1024u) /* 32 MiB per file; the volume holds ~1 GiB */
 
 typedef struct {
@@ -28,6 +28,15 @@ int fs_read_file(const char *name, uint8_t *buf, uint32_t maxlen);
 
 /* Delete a file. Returns 0 on success, -1 if not found. */
 int fs_delete(const char *name);
+
+/* Change a directory entry's name. File bytes stay where they are.
+ * Returns 0 on success, -1 if missing, the new name is taken, or it
+ * does not fit in FS_NAME_LEN. */
+int fs_rename(const char *from, const char *to);
+
+/* Create bin/, sys/, and home/ and move the flat names that belong there.
+ * Safe to call on every mount: a name already in place is left alone. */
+void fs_organize(void);
 
 /* Fill 'out' with info for up to 'max' files. Returns the number written. */
 int fs_list(fs_fileinfo_t *out, int max);

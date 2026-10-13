@@ -131,7 +131,7 @@ static void run_selftests() {
     serial_write(ok ? "PASS\n" : "FAIL\n");
 }
 
-/* Exercises the filesystem and demonstrates persistence: a "bootcount" file
+/* Exercises the filesystem and demonstrates persistence: a "sys/bootcount" file
  * is read, incremented and written back on every boot. Also does a longer
  * write/read round-trip that forces a multi-sector superblock rewrite - the
  * same path that VirtualBox used to corrupt under multi-sector PIO. */
@@ -147,7 +147,7 @@ static void run_fs_selftest() {
 
     uint32_t count = 0;
     uint8_t buf[8];
-    if (fs_read_file("bootcount", buf, sizeof(buf)) >= 4) {
+    if (fs_read_file("sys/bootcount", buf, sizeof(buf)) >= 4) {
         count = (uint32_t) buf[0] | ((uint32_t) buf[1] << 8)
               | ((uint32_t) buf[2] << 16) | ((uint32_t) buf[3] << 24);
     }
@@ -157,12 +157,12 @@ static void run_fs_selftest() {
         (uint8_t) (count), (uint8_t) (count >> 8),
         (uint8_t) (count >> 16), (uint8_t) (count >> 24)
     };
-    fs_write_file("bootcount", out, 4);
+    fs_write_file("sys/bootcount", out, 4);
 
     /* Verify the write round-trips. */
     uint32_t check = 0;
     uint8_t vbuf[8];
-    if (fs_read_file("bootcount", vbuf, sizeof(vbuf)) >= 4) {
+    if (fs_read_file("sys/bootcount", vbuf, sizeof(vbuf)) >= 4) {
         check = (uint32_t) vbuf[0] | ((uint32_t) vbuf[1] << 8)
               | ((uint32_t) vbuf[2] << 16) | ((uint32_t) vbuf[3] << 24);
     }
@@ -208,7 +208,7 @@ static void run_initrd_selftest() {
         serial_write("FAIL (second install still wrote files)\n");
         return;
     }
-    if (!fs_exists("hello.elf") || !fs_exists("chaoswm.elf")) {
+    if (!fs_exists("bin/hello.elf") || !fs_exists("bin/chaoswm.elf")) {
         serial_write("FAIL (programs missing after install)\n");
         return;
     }
@@ -241,20 +241,20 @@ static void run_tasking_selftest() {
  * the whole pipeline: fs read -> address space -> ELF parse -> segment load ->
  * ring-3 exec -> clean teardown. */
 static void run_elf_selftest() {
-    serial_write("[test] exec hello.elf from disk...\n");
-    int rc = elf_exec("hello.elf");
+    serial_write("[test] exec bin/hello.elf from disk...\n");
+    int rc = elf_exec("bin/hello.elf");
     serial_write(rc == 0 ? "[test] elf loader: PASS\n"
                          : "[test] elf loader: FAIL\n");
 }
 
-/* AUTOTEST: spawn two copies of spin.elf at once. Each runs in its own address
+/* AUTOTEST: spawn two copies of bin/spin.elf at once. Each runs in its own address
  * space at the same virtual address (USER_BASE), sleeps between prints and
  * exits. We wait until both terminate, proving per-process address spaces,
  * preemptive user-mode multitasking, blocking syscalls and teardown all work. */
 static void run_usermode_selftest() {
-    serial_write("[test] spawning 2 isolated ELF tasks (spin.elf x2)...\n");
-    int a = elf_spawn("spin.elf");
-    int b = elf_spawn("spin.elf");
+    serial_write("[test] spawning 2 isolated ELF tasks (bin/spin.elf x2)...\n");
+    int a = elf_spawn("bin/spin.elf");
+    int b = elf_spawn("bin/spin.elf");
     if (a < 0 || b < 0) {
         serial_write("[test] isolated tasks: FAIL (spawn)\n");
         return;
@@ -271,26 +271,26 @@ static void run_usermode_selftest() {
 }
 
 /* AUTOTEST: prove user programs can read the keyboard. We inject fake
- * keystrokes into the keyboard ring buffer, then run greet.elf, which reads a
+ * keystrokes into the keyboard ring buffer, then run bin/greet.elf, which reads a
  * line via SYS_READLINE and prints a greeting built from it. */
 static void run_input_selftest() {
-    serial_write("[test] keyboard input syscalls (greet.elf)...\n");
+    serial_write("[test] keyboard input syscalls (bin/greet.elf)...\n");
     kbd_inject("chaOS tester\n");
-    int rc = elf_exec("greet.elf");
+    int rc = elf_exec("bin/greet.elf");
     serial_write(rc == 0 ? "[test] input syscalls: PASS\n"
                          : "[test] input syscalls: FAIL\n");
 }
 
-/* AUTOTEST: command-line arguments. args.elf prints its argc/argv; the kernel
+/* AUTOTEST: command-line arguments. bin/args.elf prints its argc/argv; the kernel
  * builds them on the new process's stack from the exec command line. */
 static void run_args_selftest() {
-    serial_write("[test] argc/argv (args.elf alpha beta 42)...\n");
-    int rc = elf_exec("args.elf alpha beta 42");
+    serial_write("[test] argc/argv (bin/args.elf alpha beta 42)...\n");
+    int rc = elf_exec("bin/args.elf alpha beta 42");
     serial_write(rc == 0 ? "[test] argv: PASS\n" : "[test] argv: FAIL\n");
 }
 
 /* AUTOTEST: pipes (roadmap P1.1 IPC). First a kernel-level unit check of the
- * ring-buffer semantics, then the real thing: pipedemo.elf spawns pipekid.elf
+ * ring-buffer semantics, then the real thing: bin/pipedemo.elf spawns pipekid.elf
  * and the two processes exchange bytes through a pair of pipes. The parent
  * records the verdict in the file "pipetest", which we read back here. */
 static void run_pipe_selftest() {
@@ -305,9 +305,9 @@ static void run_pipe_selftest() {
           && pipe_read(p, tmp, (int) sizeof(tmp)) == 0; /* EOF frees the slot */
     serial_write(ok ? "PASS\n" : "FAIL\n");
 
-    serial_write("[test] IPC via pipes (pipedemo.elf <-> pipekid.elf)...\n");
+    serial_write("[test] IPC via pipes (bin/pipedemo.elf <-> pipekid.elf)...\n");
     fs_write_file("pipetest", (uint8_t *) "??", 2); /* clobber stale verdicts */
-    int rc = elf_exec("pipedemo.elf");
+    int rc = elf_exec("bin/pipedemo.elf");
 
     uint8_t verdict[4] = { 0 };
     int n = fs_read_file("pipetest", verdict, 3);
@@ -322,31 +322,31 @@ static void run_pipe_selftest() {
  * survive a crashing child, then banish cleanly.
  * The inject must fit in the 255-slot keyboard ring. */
 static void run_ush_selftest() {
-    serial_write("[test] user terminal (scripted terminal.elf session)...\n");
+    serial_write("[test] user terminal (scripted bin/terminal.elf session)...\n");
     fs_delete("scratch.txt");
     fs_delete("box/inside.txt");
     fs_delete("inside.txt");
     fs_delete("box/");
     kbd_inject("ls\n"
-               "erase hello.elf\n"
+               "erase bin/hello.elf\n"
                "scribe scratch.txt deck\n"
                "glance scratch.txt\n"
                "erase scratch.txt\n"
                "forge box\n"
                "wander box\n"
                "scribe inside.txt hi\n"
-               "erase hello.elf\n"
+               "erase bin/hello.elf\n"
                "wander /\n"
                "erase box\n"
                "reveal\n"
-               "summon spin.elf\n"
-               "summon args.elf from terminal\n"
-               "summon crash.elf\n"
+               "summon bin/spin.elf\n"
+               "summon bin/args.elf from terminal\n"
+               "summon bin/crash.elf\n"
                "banish\n");
-    int rc = elf_exec("terminal.elf");
+    int rc = elf_exec("bin/terminal.elf");
     uint8_t body[8];
     int n = fs_read_file("box/inside.txt", body, sizeof(body));
-    int ok = (rc == 0) && fs_exists("hello.elf") && !fs_exists("scratch.txt")
+    int ok = (rc == 0) && fs_exists("bin/hello.elf") && !fs_exists("scratch.txt")
              && fs_exists("box/") && !fs_exists("inside.txt")
              && n == 2 && body[0] == 'h' && body[1] == 'i';
     fs_delete("box/inside.txt");
@@ -359,24 +359,24 @@ static void run_ush_selftest() {
  * then accepts the password and writes the session name. */
 static void run_gate_selftest(void) {
     serial_write("[test] gate: ");
-    if (!fs_exists("gate.elf")) {
-        serial_write("FAIL (gate.elf missing)\n");
+    if (!fs_exists("bin/gate.elf")) {
+        serial_write("FAIL (bin/gate.elf missing)\n");
         return;
     }
-    fs_delete("accounts");
-    fs_delete("session");
+    fs_delete("sys/accounts");
+    fs_delete("sys/session");
     kbd_inject("ada\nsecret\nsecret\nada\nsecret\n");
-    if (elf_exec("gate.elf") != 0) {
+    if (elf_exec("bin/gate.elf") != 0) {
         serial_write("FAIL (exec)\n");
         return;
     }
     uint8_t buf[32];
-    int n = fs_read_file("session", buf, sizeof(buf) - 1);
+    int n = fs_read_file("sys/session", buf, sizeof(buf) - 1);
     if (n < 3 || buf[0] != 'a' || buf[1] != 'd' || buf[2] != 'a') {
         serial_write("FAIL (session)\n");
         return;
     }
-    n = fs_read_file("accounts", buf, sizeof(buf) - 1);
+    n = fs_read_file("sys/accounts", buf, sizeof(buf) - 1);
     if (n < 4 || buf[0] != 'a' || buf[1] != 'd' || buf[2] != 'a' || buf[3] != ' ') {
         serial_write("FAIL (accounts)\n");
         return;
@@ -393,7 +393,7 @@ static void run_gate_selftest(void) {
         return;
     }
     kbd_inject("banish\n");
-    if (elf_exec("terminal.elf") != 0) {
+    if (elf_exec("bin/terminal.elf") != 0) {
         serial_write("FAIL (terminal)\n");
         return;
     }
@@ -449,7 +449,7 @@ static void run_failed_exec_selftest() {
     multitasking_on = 1;
 
     int before = task_count();
-    shell_execute("exec hello.elf");
+    shell_execute("exec bin/hello.elf");
     shell_execute("tasks"); /* should reap the DEAD hello slot */
     if (task_count() > before + 1) {
         serial_write("[test] failed-exec/tasks: FAIL (dead task not reaped)\n");
@@ -458,7 +458,7 @@ static void run_failed_exec_selftest() {
 
     shell_execute("exec does_not_exist.elf");
     shell_execute("tasks");
-    shell_execute("exec bootcount");
+    shell_execute("exec sys/bootcount");
     shell_execute("tasks");
 
     if (task_alive(0) && task_count() >= 1)
@@ -467,13 +467,13 @@ static void run_failed_exec_selftest() {
         serial_write("[test] failed-exec/tasks: FAIL\n");
 }
 
-/* AUTOTEST: run crash.elf, which reads kernel memory from ring 3. With per-
+/* AUTOTEST: run bin/crash.elf, which reads kernel memory from ring 3. With per-
  * process isolation the kernel is mapped supervisor-only, so this page-faults
  * and the kernel terminates just that task. If it ends up dead and the kernel
  * is still running this code, isolation and fault handling both work. */
 static void run_fault_isolation_selftest() {
-    serial_write("[test] spawning crash.elf (reads kernel memory from ring 3)...\n");
-    int r = elf_spawn("crash.elf");
+    serial_write("[test] spawning bin/crash.elf (reads kernel memory from ring 3)...\n");
+    int r = elf_spawn("bin/crash.elf");
     if (r < 0) {
         serial_write("[test] isolation: FAIL (spawn)\n");
         return;
@@ -533,14 +533,14 @@ static void run_chaoswm_selftest() {
         serial_write("SKIP (no fb)\n");
         return;
     }
-    if (!fs_exists("chaoswm.elf")) {
-        serial_write("FAIL (chaoswm.elf missing)\n");
+    if (!fs_exists("bin/chaoswm.elf")) {
+        serial_write("FAIL (bin/chaoswm.elf missing)\n");
         return;
     }
 
     /* End the desk with the harness byte. q is not a quit key. */
     kbd_inject("\x01");
-    int rc = elf_exec("chaoswm.elf");
+    int rc = elf_exec("bin/chaoswm.elf");
     serial_write(rc == 0 ? "PASS (fb ops + quit)\n" : "FAIL\n");
 }
 
@@ -604,15 +604,15 @@ static int buf_contains(const uint8_t *buf, int n, const char *needle) {
 
 static void run_scribe_selftest() {
     serial_write("[test] scribe: ");
-    if (!fs_exists("scribe.elf")) {
-        serial_write("FAIL (scribe.elf missing)\n");
+    if (!fs_exists("bin/scribe.elf")) {
+        serial_write("FAIL (bin/scribe.elf missing)\n");
         return;
     }
 
     /* Type a line, Ctrl-O save, Ctrl-X quit. */
     fs_delete("note.txt");
     kbd_inject("hello deck\017\030");
-    if (elf_exec("scribe.elf note.txt") != 0) {
+    if (elf_exec("bin/scribe.elf note.txt") != 0) {
         serial_write("FAIL (exec)\n");
         return;
     }
@@ -626,7 +626,7 @@ static void run_scribe_selftest() {
 
     /* An existing file opens the editor. Extra text must not replace it. */
     kbd_inject("scribe note.txt OVER\n!\017\030banish\n");
-    if (elf_exec("terminal.elf") != 0) {
+    if (elf_exec("bin/terminal.elf") != 0) {
         serial_write("FAIL (terminal)\n");
         return;
     }
@@ -642,8 +642,8 @@ static void run_scribe_selftest() {
 /* AUTOTEST: folio scrap + SYS_DELETEFILE (roadmap P4.1). */
 static void run_folio_selftest() {
     serial_write("[test] folio: ");
-    if (!fs_exists("folio.elf")) {
-        serial_write("FAIL (folio.elf missing)\n");
+    if (!fs_exists("bin/folio.elf")) {
+        serial_write("FAIL (bin/folio.elf missing)\n");
         return;
     }
     const char *payload = "temp note\n";
@@ -654,7 +654,7 @@ static void run_folio_selftest() {
         return;
     }
     kbd_inject("roster\nscrap delfile.txt\nq\n");
-    int rc = elf_exec("folio.elf");
+    int rc = elf_exec("bin/folio.elf");
     if (rc != 0) {
         serial_write("FAIL (exec)\n");
         return;
@@ -666,18 +666,18 @@ static void run_folio_selftest() {
     serial_write("PASS (browse+scrap)\n");
 }
 
-/* AUTOTEST: syscall user-pointer validation. badptr.elf feeds every
+/* AUTOTEST: syscall user-pointer validation. bin/badptr.elf feeds every
  * pointer-taking syscall kernel / LFB / out-of-window addresses and expects
  * -1 each time; it records its verdict in badptr.txt through a valid pointer. */
 static void run_uaccess_selftest() {
     serial_write("[test] uaccess: ");
-    if (!fs_exists("badptr.elf")) {
-        serial_write("FAIL (badptr.elf missing)\n");
+    if (!fs_exists("bin/badptr.elf")) {
+        serial_write("FAIL (bin/badptr.elf missing)\n");
         return;
     }
     fs_delete("badptr.txt");
     uint32_t frames_before = frame_used();
-    int rc = elf_exec("badptr.elf");
+    int rc = elf_exec("bin/badptr.elf");
     if (rc != 0) {
         serial_write("FAIL (exec)\n");
         return;
@@ -701,7 +701,7 @@ static void run_uaccess_selftest() {
     serial_write("PASS (hostile pointers rejected, surfaces reclaimed)\n");
 }
 
-/* AUTOTEST: blocking input events (GUI G3). mousedemo.elf sits in
+/* AUTOTEST: blocking input events (GUI G3). bin/mousedemo.elf sits in
  * SYS_EVENT_WAIT; we check it is really TASK_BLOCKED (not polling), that an
  * injected mouse packet and a key both reach it, and that 'q' ends it. */
 static void idle_ticks(uint32_t n) {
@@ -711,13 +711,13 @@ static void idle_ticks(uint32_t n) {
 
 static void run_event_selftest() {
     serial_write("[test] events: ");
-    if (!fs_exists("mousedemo.elf")) {
-        serial_write("FAIL (mousedemo.elf missing)\n");
+    if (!fs_exists("bin/mousedemo.elf")) {
+        serial_write("FAIL (bin/mousedemo.elf missing)\n");
         return;
     }
     fs_delete("evdemo.txt");
 
-    int pid = elf_spawn("mousedemo.elf");
+    int pid = elf_spawn("bin/mousedemo.elf");
     if (pid < 0) {
         serial_write("FAIL (spawn)\n");
         return;
@@ -800,7 +800,7 @@ static void run_wm_client_selftest() {
         serial_write("SKIP (no fb)\n");
         return;
     }
-    if (!fs_exists("chaoswm.elf") || !fs_exists("terminal.elf")) {
+    if (!fs_exists("bin/chaoswm.elf") || !fs_exists("bin/terminal.elf")) {
         serial_write("FAIL (elf missing)\n");
         return;
     }
@@ -812,7 +812,7 @@ static void run_wm_client_selftest() {
     int tasks_before = task_count();   /* earlier tests leave worker threads */
     int pipes_before = count_free_pipes();
     kbd_inject("t" "erase wmdel.txt\nbanish\n" "\033\x01");
-    int rc = elf_exec("chaoswm.elf");
+    int rc = elf_exec("bin/chaoswm.elf");
     if (rc != 0) {
         serial_write("FAIL (exec)\n");
         return;
@@ -850,7 +850,7 @@ static void run_ush_window_selftest() {
         serial_write("SKIP (no fb)\n");
         return;
     }
-    if (!fs_exists("chaoswm.elf") || !fs_exists("terminal.elf")) {
+    if (!fs_exists("bin/chaoswm.elf") || !fs_exists("bin/terminal.elf")) {
         serial_write("FAIL (elf missing)\n");
         return;
     }
@@ -877,7 +877,7 @@ static void run_ush_window_selftest() {
     /* t → terminal (app mode). erase/banish land on its pipe; Esc returns
      * to command mode so the harness byte can end the desk. */
     kbd_inject("t" "erase g5inh.txt\nbanish\n" "\033\x01");
-    int rc = elf_exec("chaoswm.elf");
+    int rc = elf_exec("bin/chaoswm.elf");
     if (rc != 0) {
         serial_write("FAIL (exec)\n");
         return;
@@ -911,21 +911,21 @@ static void run_desk_selftest() {
         serial_write("SKIP (no fb)\n");
         return;
     }
-    if (!fs_exists("chaoswm.elf")) {
+    if (!fs_exists("bin/chaoswm.elf")) {
         serial_write("FAIL (elf missing)\n");
         return;
     }
-    if (fs_write_file("attune", (const uint8_t *) "notes\n", 6) < 0) {
+    if (fs_write_file("sys/attune", (const uint8_t *) "notes\n", 6) < 0) {
         serial_write("FAIL (seed)\n");
         return;
     }
     kbd_inject("a\x01");
-    if (elf_exec("chaoswm.elf") != 0) {
+    if (elf_exec("bin/chaoswm.elf") != 0) {
         serial_write("FAIL (exec)\n");
         return;
     }
     uint8_t buf[16];
-    int n = fs_read_file("attune", buf, 15);
+    int n = fs_read_file("sys/attune", buf, 15);
     if (n < 4 || buf[0] != 'c' || buf[1] != 'o' || buf[2] != 'd' || buf[3] != 'e') {
         serial_write("FAIL (attune not persisted)\n");
         return;
@@ -977,7 +977,7 @@ static void run_idle_selftest() {
  * reboot — those verbs are admin, and this session has not ascended. */
 static void run_ps_selftest(void) {
     serial_write("[test] processes: ");
-    int pid = elf_spawn("spin.elf");
+    int pid = elf_spawn("bin/spin.elf");
     if (pid < 0) {
         serial_write("FAIL (spawn)\n");
         return;
@@ -1011,8 +1011,8 @@ static void run_ps_selftest(void) {
         serial_write("FAIL (kill)\n");
         return;
     }
-    int a = elf_spawn("spin.elf");
-    int b = elf_spawn("spin.elf");
+    int a = elf_spawn("bin/spin.elf");
+    int b = elf_spawn("bin/spin.elf");
     if (a < 0 || b < 0 || task_freeze(a) || task_freeze(b) ||
         task_set_parent(b, a) || task_obliterate(a) ||
         task_alive(a) || task_alive(b)) {
@@ -1027,8 +1027,8 @@ static void run_ps_selftest(void) {
     }
     /* A disk image may already have an account. Drop it so this session
      * is guest and cannot ascend into rebirth. */
-    fs_delete("accounts");
-    fs_delete("session");
+    fs_delete("sys/accounts");
+    fs_delete("sys/session");
     kbd_inject("observe\n"
                "oversee\n"
                "slay 0\n"
@@ -1039,7 +1039,7 @@ static void run_ps_selftest(void) {
                "slumber\n"
                "extinguish\n"
                "banish\n");
-    if (elf_exec("terminal.elf") != 0) {
+    if (elf_exec("bin/terminal.elf") != 0) {
         serial_write("FAIL (terminal)\n");
         return;
     }
@@ -1075,6 +1075,21 @@ static void run_audio_selftest(void) {
     serial_write("PASS (hda stream, usb audio packet)\n");
 }
 
+/* Press and release must both come back. The character ring only has key-down. */
+static void run_keyevt_selftest(void) {
+    serial_write("[test] key events: ");
+    while (kbd_poll_key() >= 0) {}
+    kbd_note(1, 0x1C);
+    kbd_note(0, 0x1C);
+    int down = kbd_poll_key();
+    int up = kbd_poll_key();
+    int empty = kbd_poll_key();
+    if (down == ((1 << 8) | 0x1C) && up == 0x1C && empty < 0)
+        serial_write("PASS (press and release)\n");
+    else
+        serial_write("FAIL\n");
+}
+
 void run_autotests(void) {
     run_mem_selftest();
     run_audio_selftest();
@@ -1082,6 +1097,7 @@ void run_autotests(void) {
     run_tasking_selftest();
     run_elf_selftest();
     run_input_selftest();
+    run_keyevt_selftest();
     run_args_selftest();
     run_pipe_selftest();
     run_ush_selftest();

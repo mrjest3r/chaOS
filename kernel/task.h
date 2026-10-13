@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "event_user.h"
+#include "frame_user.h"
 #include "proc_user.h"
 
 typedef enum {
@@ -56,6 +57,9 @@ typedef struct task {
     int io_owner;
     uint32_t brk_base;         /* first byte past the loaded image, page aligned */
     uint32_t brk;              /* current heap end (SYS_BRK)                     */
+    uint32_t frame_ptr;        /* published pixels, user virtual, or 0         */
+    uint16_t frame_w, frame_h;
+    int16_t  frame_x, frame_y; /* where the compositor placed the frame        */
 } task_t;
 
 /* Registers the currently-running kernel context as task 0 (the idle/shell). */
@@ -105,6 +109,11 @@ int task_list(uproc_t *out, int max);
 void task_set_name(int id, const char *name);
 /* Point a live task at another slot. parent -1 clears it. */
 int task_set_parent(int id, int parent);
+
+/* Raw key queue (SYS_KEYEVT) is delivered only to this task. -1 means any. */
+void task_set_keys(int id);
+int  task_raw_keys(void);
+int  task_frame(frame_req_t *req);
 
 /* User tasks only. Refuse pid 0, kernel threads, and the caller.
  * Kill leaves the slot DEAD for the next reap. Freeze sticks until awaken. */

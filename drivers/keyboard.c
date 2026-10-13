@@ -48,6 +48,33 @@ static char ring[RING_SIZE];
 static volatile uint32_t ring_head = 0;
 static volatile uint32_t ring_tail = 0;
 
+/* Press/release queue. The character ring only hears key-down ASCII, so a
+ * game that needs "key released" cannot use it. */
+#define KEV_SIZE 64
+static struct { uint8_t pressed, code; } kev[KEV_SIZE];
+static volatile uint32_t kev_head = 0;
+static volatile uint32_t kev_tail = 0;
+
+void kbd_note(int pressed, unsigned char code) {
+    uint32_t next = (kev_head + 1) % KEV_SIZE;
+    if (next == kev_tail) return;
+    kev[kev_head].pressed = pressed ? 1 : 0;
+    kev[kev_head].code = code;
+    kev_head = next;
+}
+
+int kbd_poll_key(void) {
+    if (!task_raw_keys()) {
+        kev_tail = kev_head;
+        return -1;
+    }
+    if (kev_head == kev_tail) return -1;
+    int pressed = kev[kev_tail].pressed;
+    int code = kev[kev_tail].code;
+    kev_tail = (kev_tail + 1) % KEV_SIZE;
+    return (pressed << 8) | code;
+}
+
 static void ring_push(char c) {
     uint32_t next = (ring_head + 1) % RING_SIZE;
     if (next == ring_tail) return;
@@ -128,12 +155,10 @@ static void handle_nav(uint8_t scancode) {
         else if (scancode == ARROW_RIGHT) deliver(KBD_RIGHT);
         else if (scancode == HOME) deliver(KBD_HOME);
         else if (scancode == END)  deliver(KBD_END);
-        /* Up/Down scroll the console unless an event listener wants them. */
-        else if (scancode == ARROW_UP) {
-            if (!task_event_key(UEV_KEY_UP)) screen_scroll_view(1);
-        } else if (scancode == ARROW_DOWN) {
-            if (!task_event_key(UEV_KEY_DOWN)) screen_scroll_view(-1);
-        }
+        /* Up/Down go to the desk when it is listening. Do not scroll the
+         * kernel console: that repaints text over a running game. */
+        else if (scancode == ARROW_UP) task_event_key(UEV_KEY_UP);
+        else if (scancode == ARROW_DOWN) task_event_key(UEV_KEY_DOWN);
         return;
     }
     if (scancode == ARROW_LEFT)  shell_input_left();
@@ -161,6 +186,7 @@ static void keyboard_callback(registers_t *regs) {
         uint8_t released = scancode & 0x7F;
         if (released == LSHIFT || released == RSHIFT) shift = 0;
         if (released == LCTRL) ctrl = 0; /* left, and right (E0 1D) */
+        kbd_note(0, released);
         e0_prefix = 0;
         UNUSED(regs);
         return;
@@ -173,6 +199,7 @@ static void keyboard_callback(registers_t *regs) {
         return;
     }
     idle_touch();
+    kbd_note(1, scancode);
 
     /* F1 is not a desk escape. The kernel shell stays off the GUI. */
 
@@ -184,14 +211,18 @@ static void keyboard_callback(registers_t *regs) {
      * focused window scrolls; the kernel console scrolls only when nobody
      * takes them. */
     if (scancode == PGUP || (e0_prefix && scancode == PGUP)) {
-        if (kbd_focus != KBD_FOCUS_PROGRAM || !task_event_key((char) UEV_KEY_PGUP))
+        if (kbd_focus == KBD_FOCUS_SHELL)
             screen_scroll_view(10);
+        else
+            task_event_key((char) UEV_KEY_PGUP);
         e0_prefix = 0;
         return;
     }
     if (scancode == PGDN || (e0_prefix && scancode == PGDN)) {
-        if (kbd_focus != KBD_FOCUS_PROGRAM || !task_event_key((char) UEV_KEY_PGDN))
+        if (kbd_focus == KBD_FOCUS_SHELL)
             screen_scroll_view(-10);
+        else
+            task_event_key((char) UEV_KEY_PGDN);
         e0_prefix = 0;
         return;
     }

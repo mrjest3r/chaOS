@@ -24,4 +24,9 @@ int  kbd_haschar();
 char kbd_getchar();               /* non-blocking; returns 0 when empty      */
 void kbd_inject(const char *s);   /* fake keystrokes (used by self-tests)    */
 
+/* Press and release, separate from the character ring. Return is
+ * (pressed << 8) | set-1 scancode, or -1 when the queue is empty. */
+int  kbd_poll_key(void);
+void kbd_note(int pressed, unsigned char code);
+
 #endif

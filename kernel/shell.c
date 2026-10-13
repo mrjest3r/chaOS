@@ -221,10 +221,15 @@ static void cmd_tasks() {
 }
 
 static void cmd_ls() {
-    fs_fileinfo_t files[FS_MAX_FILES];
+    fs_fileinfo_t *files = (fs_fileinfo_t *) malloc(FS_MAX_FILES * sizeof(fs_fileinfo_t));
+    if (!files) {
+        kprint("ls: out of memory\n");
+        return;
+    }
     int n = fs_list(files, FS_MAX_FILES);
     if (n == 0) {
         kprint("(no files)\n");
+        free(files);
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -234,6 +239,7 @@ static void cmd_ls() {
         print_dec(files[i].size);
         kprint(" bytes)\n");
     }
+    free(files);
 }
 
 static void cmd_cat(char *name) {

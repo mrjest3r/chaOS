@@ -640,25 +640,6 @@ static uint32_t pci_find_fb_bar(void) {
     return 0;
 }
 
-/* VirtualBox: never use Bochs DISPI (breaks VBoxVGA / VMSVGA paint).
- * Detect via PCI vendor 0x80EE (VGA or Guest Additions) or CPUID HV leaf. */
-static int pci_is_virtualbox(void) {
-    for (uint8_t bus = 0; bus < 2; bus++) {
-        for (uint8_t slot = 0; slot < 32; slot++) {
-            uint32_t id = pci_read(bus, slot, 0, 0);
-            if ((id & 0xFFFFu) == 0x80EEu) return 1; /* InnoTek / Oracle */
-        }
-    }
-    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
-    asm volatile("cpuid"
-                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                 : "a"(0x40000000u));
-    /* "VBoxVBoxVBox" in ebx/ecx/edx */
-    if (ebx == 0x786f4256u && ecx == 0x786f4256u && edx == 0x786f4256u)
-        return 1;
-    return 0;
-}
-
 static void serial_u32(uint32_t p) {
     char buf[16];
     int i = 0;
@@ -683,10 +664,8 @@ static void serial_hex32(uint32_t p) {
     serial_write(buf);
 }
 
-/* Force 800x600x32 via Bochs DISPI (QEMU / non-VBox only).
- * QEMU zeroes VIRT_WIDTH on ENABLE — set virt after enable.
- * VirtualBox VBoxVGA must NOT use DISPI: virt-width experiments caused
- * stretch, striping, and half-screen smash. Use BIOS VBE there. */
+/* Force 800x600x32 via Bochs DISPI. QEMU and VirtualBox VBoxVGA both
+ * speak this. QEMU zeroes VIRT_WIDTH on ENABLE, so set virt after enable. */
 static int bochs_vbe_force_32(uint16_t w, uint16_t h) {
     uint16_t id = dispi_read(0);
     if (id < 0xB0C0 || id > 0xB0C5) return -1;
@@ -736,17 +715,9 @@ static int fb_from_bios(const fb_boot_info_t *info) {
 int fb_init(void) {
     fb_boot_info_t *info = (fb_boot_info_t *) FB_INFO_ADDR;
     uint32_t pci_bar = pci_find_fb_bar();
-    int vbox = pci_is_virtualbox();
     int used_dispi = 0;
 
-    if (vbox) {
-        serial_write("[fb] VirtualBox VGA — BIOS VBE only (no DISPI)\n");
-        if (fb_from_bios(info) != 0) {
-            serial_write("[fb] no 32bpp VBE — VGA text console\n");
-            fb_ok = 0;
-            return -1;
-        }
-    } else if (fb_from_bios(info) == 0) {
+    if (fb_from_bios(info) == 0) {
         serial_write("[fb] BIOS VBE 32bpp\n");
     } else if (bochs_vbe_force_32(800, 600) == 0) {
         used_dispi = 1;

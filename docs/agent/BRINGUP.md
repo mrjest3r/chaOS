@@ -32,7 +32,7 @@ On the chosen **x86** board:
 | Optional COM1 (I/O `0x3F8`) | Debug when display fails |
 | Storage: ATA primary master at `0x1F0`, or none | Driver is single-sector PIO IDE; SATA AHCI will not work until P3.2 grows a driver |
 | PS/2 keyboard (or USB with legacy PS/2 emulation) | Current kbd driver |
-| Optional VBE 32 bpp LFB | Soft console; else VGA text (same as many VirtualBox hosts) |
+| 800×600×32 LFB | BIOS VBE, or Bochs DISPI if the BIOS has no 32 bpp mode (QEMU and VirtualBox VBoxVGA). VGA text only if both fail |
 
 Good first targets: old ThinkPad / mini-ITX with IDE or “Legacy IDE”, or any box that can boot a 1.44 MiB USB-FDD image. Avoid “UEFI only” sticks until a separate bootloader exists.
 
@@ -110,8 +110,7 @@ Implementation (`boot/vbe.asm` + `drivers/fb.c`):
 
 1. Real-mode `int 0x10` AX=0x4F02 tries 0x115 / 0x118 / 0x112, 32 bpp + LFB only (24 bpp is rejected).
 2. Compact info block at `0x5000` (`CHAOSFB`).
-3. Non-VirtualBox: if BIOS VBE failed, `fb_init` forces **800×600×32** via Bochs DISPI.
-4. VirtualBox VBoxVGA: BIOS VBE only (DISPI smashes the display).
+3. If BIOS VBE failed, `fb_init` forces **800×600×32** via Bochs DISPI. QEMU std VGA and VirtualBox VBoxVGA both take this path.
 
 On COM1 you should see one of:
 
@@ -120,10 +119,9 @@ On COM1 you should see one of:
 [fb] 800x600 ...
 ```
 
-or `[fb] DISPI 32bpp ...` then the same 800×600 line, or
-`[fb] no 32bpp VBE — VGA text console` if the BIOS cannot do it.
+or `[fb] DISPI 32bpp ...` then the same 800×600 line. VGA text is the leftover when neither BIOS VBE nor DISPI works. The string `[fb] no 32bpp VBE — VGA text console` is no longer what VirtualBox prints; that machine takes the DISPI line.
 
-**Board ask:** pick a machine whose BIOS offers 800×600×32 LFB (or Bochs-compatible DISPI). If it only has 24 bpp / 16 bpp, the desk will not start; F1 / VGA text still works.
+**Board ask:** a BIOS 800×600×32 LFB, or a Bochs-compatible DISPI. If both are missing, the desk does not start and the VGA text console does. `q` and F1 do not leave the desk.
 
 ## After P3.1
 

@@ -4,7 +4,7 @@
 /* Shared deck mode (G6). The file "attune" is "deck", "notes", or "code"
  * plus a newline. chaoswm reads and writes it — no new syscall. */
 
-#define ATTUNE_FILE "attune"
+#define ATTUNE_FILE "sys/attune"
 
 enum {
     ATTUNE_DECK = 0,

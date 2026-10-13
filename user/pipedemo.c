@@ -24,7 +24,7 @@ int main(void) {
         return 1;
     }
 
-    char cmd[48] = "pipekid.elf ";
+    char cmd[48] = "bin/pipekid.elf ";
     append_dec(cmd, to_child);
     cmd[ustrlen(cmd) + 1] = '\0';
     cmd[ustrlen(cmd)] = ' ';

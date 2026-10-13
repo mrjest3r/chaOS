@@ -248,6 +248,16 @@ void *umalloc(uint32_t n) {
     n = (n + 7u) & ~7u;
     for (heap_block_t *b = heap_head; b; b = b->next) {
         if (b->free && b->size >= n) {
+            /* Leave the tail free. A tiny alloc must not swallow a
+             * multi-megabyte block that a WAD is about to reuse. */
+            if (b->size >= n + sizeof(heap_block_t) + 8u) {
+                heap_block_t *rest = (heap_block_t *) ((uint8_t *) (b + 1) + n);
+                rest->size = b->size - n - (uint32_t) sizeof(heap_block_t);
+                rest->free = 1;
+                rest->next = b->next;
+                b->next = rest;
+                b->size = n;
+            }
             b->free = 0;
             return b + 1;
         }
@@ -269,6 +279,45 @@ void ufree(void *p) {
     if (!p) return;
     heap_block_t *b = (heap_block_t *) p - 1;
     b->free = 1;
+}
+
+void *ucalloc(uint32_t n, uint32_t sz) {
+    if (n != 0 && sz > 0xFFFFFFFFu / n) return 0;
+    uint32_t bytes = n * sz;
+    uint8_t *p = (uint8_t *) umalloc(bytes);
+    if (!p) return 0;
+    for (uint32_t i = 0; i < bytes; i++) p[i] = 0;
+    return p;
+}
+
+void *urealloc(void *p, uint32_t n) {
+    if (!p) return umalloc(n);
+    if (n == 0) { ufree(p); return 0; }
+    heap_block_t *b = (heap_block_t *) p - 1;
+    if (b->size >= n) return p;
+    uint8_t *q = (uint8_t *) umalloc(n);
+    if (!q) return 0;
+    for (uint32_t i = 0; i < b->size; i++) q[i] = ((uint8_t *) p)[i];
+    ufree(p);
+    return q;
+}
+
+int ukeyevt(void) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_KEYEVT));
+    return r;
+}
+
+int uplay(const void *stereo, int frames) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_AUDIO), "b" (stereo), "c" (frames));
+    return r;
+}
+
+int uframe(frame_req_t *req) {
+    int r;
+    asm volatile("int $0x80" : "=a" (r) : "a" (SYS_FRAME), "b" (req) : "memory");
+    return r;
 }
 
 void uexit(void) {

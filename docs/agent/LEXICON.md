@@ -23,7 +23,7 @@ Click it, or press `t` in command mode. More programs join that icon
 list later. `q` and F1 do not leave the desk and do not open the kernel
 shell. `banish` closes the terminal and returns to the desk.
 
-`folio.elf` and `scribe.elf` are still programs (`summon folio.elf`).
+`folio.elf` and `scribe.elf` are still programs (`summon folio.elf` finds them in `bin/`).
 They are not desk panels. `scribe.elf` is the terminal text editor.
 File work goes through the verbs below.
 
@@ -33,7 +33,7 @@ File work goes through the verbs below.
 |------|---------|-----|
 | `lexicon` | List commands | yes |
 | `banish` | Exit the terminal | yes |
-| `summon PROGRAM` | Run a program and wait | yes |
+| `summon PROGRAM` | Run a program and wait. A bare name is looked up in `bin/` | yes |
 | `reveal` | List the current directory | yes |
 | `wander DIR` | Change directory (`/`, `..`, a relative name) | yes |
 | `abode` | Show current directory | yes |

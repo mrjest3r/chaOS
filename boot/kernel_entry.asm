@@ -26,6 +26,12 @@ HIGH_PDE  equ 768           ; 0xC0000000 >> 22
 NUM_PDES  equ 4             ; 4 entries x 4 MiB = 16 MiB
 
 _start:
+    ; VirtualBox's BIOS leaves A20 off. With that gate closed, bit 20 of
+    ; every physical address is forced to 0, so the heap at 0x100000 is
+    ; written over the kernel and the next interrupt triple-faults.
+    ; QEMU's BIOS already has A20 open; the test below returns immediately.
+    call enable_a20
+
     ; Clear the boot page directory.
     cld
     mov edi, PAGE_DIR
@@ -73,3 +79,75 @@ _start:
     call eax
 
     jmp $
+
+; Returns with ZF clear when [0x500] and [0x100500] are different bytes.
+enable_a20:
+    call a20_is_open
+    jnz .open
+    in al, 0x92                 ; fast A20 gate (VirtualBox implements this)
+    or al, 00000010b
+    and al, 11111110b           ; bit 0 is reset; leave it clear
+    out 0x92, al
+    call a20_is_open
+    jnz .open
+    call a20_via_kbc
+    call a20_is_open
+    jnz .open
+    mov dword [0xB8000], 0x4F414F41
+    mov dword [0xB8004], 0x4F324F32
+    mov dword [0xB8008], 0x4F304F30
+    cli
+    hlt
+.open:
+    ret
+
+a20_is_open:
+    push eax
+    mov byte [0x500], 0
+    mov byte [0x100500], 1
+    cmp byte [0x500], 1         ; equal means the write wrapped, so A20 is shut
+    pop eax
+    ret
+
+a20_via_kbc:
+    call .wait_in
+    mov al, 0xAD                ; disable the keyboard
+    out 0x64, al
+    call .wait_in
+    mov al, 0xD0                ; read controller output port
+    out 0x64, al
+    call .wait_out
+    in al, 0x60
+    or al, 00000010b
+    push eax
+    call .wait_in
+    mov al, 0xD1                ; write controller output port
+    out 0x64, al
+    call .wait_in
+    pop eax
+    out 0x60, al
+    call .wait_in
+    mov al, 0xAE                ; enable the keyboard
+    out 0x64, al
+    call .wait_in
+    ret
+
+.wait_in:
+    mov ecx, 100000
+.spin_in:
+    in al, 0x64
+    test al, 2
+    jz .ready_in
+    loop .spin_in
+.ready_in:
+    ret
+
+.wait_out:
+    mov ecx, 100000
+.spin_out:
+    in al, 0x64
+    test al, 1
+    jnz .ready_out
+    loop .spin_out
+.ready_out:
+    ret

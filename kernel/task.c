@@ -1,6 +1,8 @@
 #include "task.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "uaccess.h"
+#include "frame_user.h"
 #include "../cpu/arch.h"
 #include "../libc/mem.h"
 
@@ -46,6 +48,18 @@ static void reset_events(task_t *t) {
 static void reset_io(task_t *t) {
     t->stdin_pipe = t->stdout_pipe = -1;
     t->io_owner = 0;
+    t->frame_ptr = 0;
+    t->frame_w = t->frame_h = 0;
+    t->frame_x = t->frame_y = 0;
+}
+
+static int key_owner = -1;
+
+void task_set_keys(int id) { key_owner = id; }
+
+int task_raw_keys(void) {
+    if (key_owner < 0) return 1;
+    return current && current->id == key_owner;
 }
 
 static int live_state(task_state_t s) {
@@ -617,6 +631,87 @@ int task_stdin(void) {
 
 int task_stdout(void) {
     return current ? current->stdout_pipe : -1;
+}
+
+static task_t *live_id(int id) {
+    if (id < 0 || id >= MAX_TASKS) return 0;
+    task_t *t = &tasks[id];
+    if (t->id != id || t->state == TASK_UNUSED || t->state == TASK_DEAD) return 0;
+    return t;
+}
+
+static uint32_t va_phys(uint32_t cr3, uint32_t va) {
+    uint32_t *pd = (uint32_t *) cr3;
+    uint32_t pde = pd[va >> 22];
+    if (!(pde & 1u)) return 0;
+    uint32_t *pt = (uint32_t *) (pde & ~0xFFFu);
+    uint32_t pte = pt[(va >> 12) & 0x3FFu];
+    if (!(pte & 1u)) return 0;
+    return (pte & ~0xFFFu) | (va & 0xFFFu);
+}
+
+int task_frame(frame_req_t *req) {
+    if (!req || !current) return -1;
+    if (req->op == FRAME_PUBLISH) {
+        if (req->w < 1 || req->h < 1 || req->w > 1024 || req->h > 1024) return -1;
+        uint32_t bytes = (uint32_t) req->w * (uint32_t) req->h * 4u;
+        if (!user_range_ok((const void *) req->ptr, bytes)) return -1;
+        current->frame_ptr = req->ptr;
+        current->frame_w = (uint16_t) req->w;
+        current->frame_h = (uint16_t) req->h;
+        return 0;
+    }
+    if (req->op == FRAME_QUERY) {
+        req->x = current->frame_x;
+        req->y = current->frame_y;
+        req->w = current->frame_w;
+        req->h = current->frame_h;
+        req->flags = 0;
+        req->ptr = current->frame_ptr;
+        return current->frame_ptr ? 0 : -1;
+    }
+    if (req->op == FRAME_KEYS) {
+        task_set_keys(req->pid);
+        return 0;
+    }
+    task_t *src = live_id(req->pid);
+    if (!src) return -1;
+    if (req->op == FRAME_PLACE) {
+        src->frame_x = (int16_t) req->x;
+        src->frame_y = (int16_t) req->y;
+        return 0;
+    }
+    /* Alive but not published yet: the window stays blank until the
+     * first frame. A dead task already returned -1 above. */
+    if (req->op != FRAME_BLIT) return -1;
+    if (!src->frame_ptr) return 0;
+    int sw = src->frame_w, sh = src->frame_h;
+    int pitch = req->w, dh = req->h;
+    if (pitch < 1 || dh < 1) return -1;
+    if (!user_range_ok((const void *) req->ptr, (uint32_t) pitch * (uint32_t) dh * 4u))
+        return -1;
+    uint32_t *dst = (uint32_t *) req->ptr;
+    for (int row = 0; row < sh; row++) {
+        int dy = req->y + row;
+        if (dy < 0 || dy >= dh) continue;
+        uint32_t row_va = src->frame_ptr + (uint32_t) row * (uint32_t) sw * 4u;
+        int col = 0;
+        while (col < sw) {
+            int dx = req->x + col;
+            uint32_t phys = va_phys(src->page_dir, row_va + (uint32_t) col * 4u);
+            if (!phys) { col++; continue; }
+            uint32_t room = (4096u - (phys & 0xFFFu)) / 4u;
+            int n = sw - col;
+            if ((uint32_t) n > room) n = (int) room;
+            for (int i = 0; i < n; i++) {
+                int x = dx + i;
+                if (x >= 0 && x < pitch)
+                    dst[dy * pitch + x] = ((uint32_t *) phys)[i];
+            }
+            col += n;
+        }
+    }
+    return 0;
 }
 
 /* ---- input events (GUI G3) ----------------------------------------------- */

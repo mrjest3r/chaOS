@@ -326,6 +326,14 @@ static int play(uint32_t cad, uint32_t dac) {
 
 int hda_ready(void) { return ready; }
 
+int hda_submit(const int16_t *stereo, int frames) {
+    if (!ready || !pcm || !stereo || frames <= 0) return -1;
+    if (frames > 1024) frames = 1024;
+    for (int i = 0; i < frames * 2; i++) pcm[i] = stereo[i];
+    for (int i = frames * 2; i < 2048; i++) pcm[i] = 0;
+    return 0;
+}
+
 void hda_init(void) {
     ready = 0;
     uint8_t dev, fn;

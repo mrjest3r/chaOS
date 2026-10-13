@@ -37,13 +37,13 @@ int main(void) {
     expect_fault("print null",        raw3(SYS_PRINT, nullp, 0, 0));
 
     expect_fault("readfile -> kernel",
-                 raw3(SYS_READFILE, (uint32_t) "bootcount", kern_hi, 4));
+                 raw3(SYS_READFILE, (uint32_t) "sys/bootcount", kern_hi, 4));
     expect_fault("readfile -> lfb",
-                 raw3(SYS_READFILE, (uint32_t) "bootcount", lfb, 4));
+                 raw3(SYS_READFILE, (uint32_t) "sys/bootcount", lfb, 4));
     expect_fault("readfile past window",
-                 raw3(SYS_READFILE, (uint32_t) "bootcount", win_end - 8, 64));
+                 raw3(SYS_READFILE, (uint32_t) "sys/bootcount", win_end - 8, 64));
     expect_fault("readfile len overflow",
-                 raw3(SYS_READFILE, (uint32_t) "bootcount",
+                 raw3(SYS_READFILE, (uint32_t) "sys/bootcount",
                       (uint32_t) scratch, 0xFFFFFFF0u));
 
     expect_fault("writefile from kernel",
@@ -125,7 +125,7 @@ int main(void) {
             expect_fault("blit from empty surface slot",
                          ufbblit(0, 0, 4, 4, s + 0x00400000u / 4, 4));
             expect_fault("readfile into surface tail overflow",
-                         raw3(SYS_READFILE, (uint32_t) "bootcount",
+                         raw3(SYS_READFILE, (uint32_t) "sys/bootcount",
                               (uint32_t) (s + 16 * 16 - 1), 8));
             if (usurface_free(s) != 0) {
                 fails++;
@@ -163,7 +163,7 @@ int main(void) {
     }
 
     /* Sanity: a legitimate pointer still works. */
-    int n = ureadfile("bootcount", scratch, (int) sizeof(scratch));
+    int n = ureadfile("sys/bootcount", scratch, (int) sizeof(scratch));
     if (n < 0) {
         fails++;
         uprint("[badptr] valid readfile FAILED\n");

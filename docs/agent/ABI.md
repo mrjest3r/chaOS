@@ -1,8 +1,8 @@
 # chaOS syscall ABI
 
-**ABI version:** 10  
+**ABI version:** 11  
 **Arch:** x86-32, `int 0x80`  
-**Sources of truth:** `kernel/syscall.h`, `user/ulib.h`, `kernel/fb_user.h`, `kernel/event_user.h`, `drivers/mouse.h`
+**Sources of truth:** `kernel/syscall.h`, `user/ulib.h`, `kernel/fb_user.h`, `kernel/frame_user.h`, `kernel/event_user.h`, `drivers/mouse.h`
 
 Translators and host SDK programs target this surface. When numbers or structs
 change incompatibly, bump **ABI version** and note it in `STATUS.md`.
@@ -20,7 +20,7 @@ change incompatibly, bump **ABI version** and note it in `STATUS.md`.
 `SYS_EXIT` does not return to the caller.
 
 **Pointer arguments** must lie entirely inside the user window
-`[USER_BASE, USER_STACK_TOP)` = `[0x40000000, 0x40400000)` **or** inside a
+`[USER_BASE, USER_STACK_TOP)` = `[0x40000000, 0x44000000)` **or** inside a
 surface the calling task currently owns (`SYS_SURFACE`, checked against the
 logical `w*h*4` size). Strings must be NUL-terminated inside the window (max
 4096 bytes). Buffers are checked as `ptr + len`. Any pointer outside those
@@ -36,6 +36,10 @@ with `FBOP_BLIT` (`src` = surface, `src_pitch` = `w`). `SYS_SURFFREE` unmaps
 it (further use → `-1`); anything still mapped is reclaimed at task exit.
 ulib: `usurface` / `usurface_free`; `user/ugfx.h` draws into one
 (`ugfx_fill`, `ugfx_text`, `ugfx_present`).
+
+## Frames (compositor)
+
+`SYS_FRAME` (`uframe`, `frame_req_t` in `kernel/frame_user.h`) lets a program publish a pixel buffer (`FRAME_PUBLISH`: `ptr`, `w`, `h`, at most 1024×1024). The compositor sets where that buffer sits (`FRAME_PLACE`) and copies it into its own surface (`FRAME_BLIT`). `FRAME_QUERY` returns the caller's placement. `FRAME_KEYS` chooses which task receives raw key-up/down (`SYS_KEYEVT`); pass the compositor's pid to take them back.
 
 ## Input events (v6, GUI G3)
 
@@ -211,6 +215,9 @@ op needed after partial paints).
 | `ulistprocs` / `upsctl` / `upower` | PROCS / PSCTL / POWER |
 | `uclock` | CLOCK |
 | `ubrk` / `umalloc` / `ufree` | BRK |
+| `ukeyevt` | KEYEVT |
+| `uplay` | AUDIO |
+| `uframe` | FRAME |
 | `usurface` / `usurface_free` | SURFACE / SURFFREE |
 | `uevent_wait` | EVENT_WAIT |
 
@@ -219,7 +226,14 @@ op needed after partial paints).
 | Region | Address |
 |--------|---------|
 | User code/data link | `USER_BASE` `0x40000000` |
-| User stack top | `USER_STACK_TOP` `0x40400000` |
+| User stack top | `USER_STACK_TOP` `0x44000000` |
 | Surfaces (4 × 4 MiB slots) | `SURF_BASE` `0x50000000` … `0x51000000` |
 | Kernel (not user-accessible) | `≥ 0xC0000000` |
 | Framebuffer LFB (kernel map; drawn via SYS_FB) | `0xE0000000` |
+
+## Key events (v11)
+
+`SYS_KEYEVT` returns the next press or release as `(pressed << 8) | scancode`
+(set-1 make code, break bit already cleared), or `-1` when the queue is empty.
+The character ring (`SYS_GETCHAR`) still only carries key-down text. A game
+that must see the key go up uses this queue. ulib: `ukeyevt`.

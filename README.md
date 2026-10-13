@@ -89,13 +89,13 @@ Delete `disk.img` to reset the on-disk filesystem.
 make sdk SRC=tools/sdk/examples/beacon.c
 ```
 
-That cross-builds the C file and writes `beacon.elf` onto `disk.img`. From the terminal, `summon beacon.elf`. The file has to be 32 KiB or smaller. Doom does not fit.
+That cross-builds the C file and writes `beacon.elf` onto `disk.img`. From the terminal, `summon beacon.elf`. The SDK refuses a file over 1 MiB or a name over 23 characters. Programs packed into the boot floppy (`tools/mkinitrd.c`) are a separate cap: 32 KiB each. The filesystem allows 32 MiB per file. Doom is not an SDK program.
 
 ## Running in a VM
 
 The boot image is `os-image.bin` / `chaos.flp` (kernel + initrd with every
-program). QEMU with std VGA (`make run`) starts the desk. There is no ISO
-target right now.
+program). QEMU with std VGA (`make run`) starts the desk. `make chaos.iso`
+puts that same floppy in an El Torito CD for VirtualBox.
 
 ```bash
 make clean && make run          # QEMU, framebuffer desk
@@ -119,8 +119,14 @@ Manual UI setup:
 1. New VM → **Other** → Other → **128 MiB** → Firmware **BIOS** (not EFI).
 2. **Storage → IDE** (PIIX4), not SATA. Primary master: `chaos-disk.vdi`.
 3. Add a **Floppy** controller → `chaos.flp`. Boot order: **Floppy**, then Hard Disk.
-4. Display: **VBoxVGA**. Many VBox BIOS builds have no 32 bpp LFB, so you get
-   VGA text. Use QEMU (`make run`) for the desk.
+4. Display: **VBoxVGA** (not VMSVGA). The BIOS has no 32 bpp mode; the kernel
+   sets 800×600×32 through the same Bochs interface QEMU uses.
+
+To boot the CD instead of the floppy: `make chaos.iso`, attach it to the IDE
+optical drive (port 1, device 0), set firmware to **BIOS**, and put **Optical**
+first in the boot order. Copy `chaos.iso` to `~/chaos-vbox-media/` if the
+project path contains a space. The disc is the 1.44 MB floppy image; a
+no-emulation ISO will not boot.
 
 Without the hard disk the OS boots into the RAM filesystem with all programs
 from the initrd; attach the disk only if you want files to persist. Rebuilt
@@ -266,13 +272,13 @@ Makefile
 | `0x00010000` (phys) | Kernel load address; boot stub runs here |
 | `0x00100000`–`0x00400000` (phys) | Kernel heap |
 | `0x00400000`–`0x01000000` (phys) | Physical frame pool (page tables, user backing frames) |
-| `0x40000000`–`0x40400000` (virt) | User virtual window (program + stack), one per process |
+| `0x40000000`–`0x44000000` (virt) | User window, 64 MiB (program, 48 MiB heap, 64 KiB stack) |
 | `0xC0000000`–`0xC1000000` (virt) | **Higher-half kernel**: alias of physical `0`–`16 MiB` |
 | `0xE0000000`+ (virt) | VBE linear framebuffer (phys from BIOS ModeInfo) |
 
 The kernel is a **higher-half kernel**: it is linked at `0xC0010000` and runs from the top of the address space, like Linux and Windows. A small boot stub (`boot/kernel_entry.asm`) runs at the physical load address, builds a temporary page directory of 4 MiB pages that maps the first 16 MiB both at `0x00000000` and at `0xC0000000`, enables paging and jumps into the high kernel. `init_paging()` later rebuilds the same double mapping with proper 4 KiB page tables.
 
-Boot sets a VESA graphics mode in real mode (`boot/vbe.asm`); `fb_init()` maps the LFB at `0xE0000000` and takes over `kprint` via a soft console. VGA text scrollback remains available only if VBE fails.
+Boot asks the BIOS for a 32 bpp VBE mode (`boot/vbe.asm`). If that fails, `fb_init()` sets 800×600×32 through Bochs DISPI, which is what QEMU and VirtualBox VBoxVGA do. The LFB is mapped at `0xE0000000`. VGA text remains only when neither path yields a framebuffer.
 
 Both kernel mappings are **supervisor-only** in every address space. User programs cannot read kernel memory; attempts page-fault and terminate the task.
 
@@ -293,7 +299,7 @@ Both kernel mappings are **supervisor-only** in every address space. User progra
 13. **Framebuffer graphics**: real-mode VBE LFB, soft text console, `fbdemo` shell command  
 14. **PS/2 mouse**: IRQ12 driver, XOR cursor on the LFB, `mouse` / `exec mousedemo.elf`, `umouse()`  
 15. **GUI groundwork**: clipped fill/blit primitives, per-task pixel surfaces (`SYS_SURFACE`), blocking input events (`SYS_EVENT_WAIT` — `chaoswm` sleeps at 0% CPU between keys/mouse)  
-16. **Apps in windows**: `chaoswm` runs `folio` / `scribe` / `ush` as client processes (`f` / `e` / `u`) with their console on pipes (`SYS_SPAWNIO`); output renders into an askew terminal window, keys route to the focused one, Esc toggles compositor commands  
+16. **Apps in windows**: text clients run on pipes (`SYS_SPAWNIO`) inside askew windows. Esc toggles compositor commands. The old `ush` panel and the `f` / `e` / `u` keys are gone; the desk icon is `terminal`  
 17. **Terminal widget**: `utext` grid. PgUp/PgDn and Up/Down scroll the window; Left/Right move the caret. `2` toggles 1×/2× glyphs
 18. **Deck terminal**: one shell (`terminal.elf`) as a desk icon on every mode; `user/verbs.h` names; `wander` / `abode` / `forge`; `q` and F1 do not reach the kernel shell
 19. **Clock and editor**: `moment` reads the CMOS clock; `scribe.elf` is a terminal text editor (Ctrl-O save, Ctrl-X quit)  
@@ -301,7 +307,7 @@ Both kernel mappings are **supervisor-only** in every address space. User progra
 
 ## Possible next steps
 
-- Mouse / pointer (cursor on the framebuffer)
-- Personal command language + chaos compositor
+- P5.2: a host translator that feeds `make sdk`
+- Network and packages (the lexicon names exist; nothing speaks on the wire)
+- Doom music (effects already mix into the HDA stream)
 - ELF shared libraries or dynamic linking
-- Virtual filesystem layers, larger disk support

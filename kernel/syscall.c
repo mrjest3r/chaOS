@@ -10,6 +10,8 @@
 #include "../drivers/idle.h"
 #include "../cpu/power.h"
 #include "../drivers/rtc.h"
+#include "../drivers/hda.h"
+#include "frame_user.h"
 #include "proc_user.h"
 #include "uaccess.h"
 #include "../libc/string.h"
@@ -183,7 +185,7 @@ static void syscall_handler(registers_t *r) {
      * mapping, so each one is checked against the user window (uaccess.h)
      * before it is dereferenced; anything outside fails with -1.
      * SYS_FB lives in syscall_fb.c so this switch stays the ABI table. */
-    if (r->eax > SYS_BRK) {
+    if (r->eax > SYS_FRAME) {
         r->eax = (uint32_t) -1;
         return;
     }
@@ -374,6 +376,27 @@ static void syscall_handler(registers_t *r) {
 
         case SYS_BRK:
             r->eax = task_brk(r->ebx);
+            break;
+
+        case SYS_KEYEVT:
+            r->eax = (uint32_t) kbd_poll_key();
+            break;
+
+        case SYS_AUDIO:
+            if ((int) r->ecx <= 0 || (int) r->ecx > 1024 ||
+                !user_range_ok((const void *) r->ebx, r->ecx * 4u)) {
+                r->eax = EFAULT;
+                break;
+            }
+            r->eax = (uint32_t) hda_submit((const int16_t *) r->ebx, (int) r->ecx);
+            break;
+
+        case SYS_FRAME:
+            if (!user_range_ok((const void *) r->ebx, sizeof(frame_req_t))) {
+                r->eax = EFAULT;
+                break;
+            }
+            r->eax = (uint32_t) task_frame((frame_req_t *) r->ebx);
             break;
 
         case SYS_DELETEFILE:

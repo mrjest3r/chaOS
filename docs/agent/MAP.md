@@ -13,7 +13,7 @@ Compact world-model. Prefer this over scanning the repo.
 ## Current technical state (Phase 11 done)
 
 - 32-bit x86, higher-half kernel at `0xC0010000`. Identity map is installed RAM up to 1 GiB. The higher-half alias stays 16 MiB.
-- Boot: floppy image (`chaos.flp` / `os-image.bin`), QEMU primary test bed. Interactive boot starts the desk (`chaoswm`) when a 32 bpp LFB is up; `q` returns to the kernel shell.
+- Boot: `chaos.flp` / `os-image.bin`, or `chaos.iso` (El Torito floppy). QEMU is the primary test bed. Interactive boot starts the desk (`chaoswm`) when a 32 bpp LFB is up (BIOS VBE, otherwise Bochs DISPI). `q` and F1 do not return to the kernel shell.
 - Paging + per-process AS, ELF32 loader, ring-3, syscalls, preemptive tasks.
 - Simple FS on ATA; **VBE** soft console + text caret; PS/2 keyboard + mouse.
 - Personal lexicon in `terminal.elf` (`user/verbs.h`, `docs/agent/LEXICON.md`). The shell accepts only those verbs.
@@ -127,7 +127,7 @@ Syscall numbers / structs for userspace: [`ABI.md`](ABI.md).
 
 ## Syscall surface (ulib)
 
-Full table in [`ABI.md`](ABI.md) (v9). Extend deliberately; bump ABI version + STATUS.
+Full table in [`ABI.md`](ABI.md) (v11). Extend deliberately; bump ABI version + STATUS.
 
 ## Input routing (G3) and windowed clients (G4)
 
@@ -137,8 +137,8 @@ Full table in [`ABI.md`](ABI.md) (v9). Extend deliberately; bump ABI version + S
 - `chaoswm` as compositor server: per window two pipes + `SYS_SPAWNIO`; client output → `utext_t` grid (`user/utext.c`) → composed into the back buffer with the window's skew; keys for the focused window → its stdin pipe (Esc toggles command mode). Client exit = EOF on its stdout; banish = close its stdin (kernel ends the client on its next read). Clients never call `SYS_FB`.
 - `t` or the **terminal** desk icon summons `terminal.elf` at 2× on every attune mode. Icons are the `desk_icons` table in `user/chaoswm.c` (label, program, glyph, scale). PgUp/PgDn scroll the focused window's `utext` history (48 lines). At the prompt, Up/Down scroll that history and Left/Right/Home/End move the caret. In app mode those four arrows are delivered to the client, so `scribe` can move. `2` toggles glyph scale.
 - **q and F1 do not leave the desk.** The kernel shell is not reachable from the GUI. `kbd_console_override` still exists and still swallows user `SYS_FB` draws, but no key sets it.
-- **G6 desk:** interactive boot execs `chaoswm` when `fb_available()` and stays there. Palette follows the `attune` file (`user/attune.h`). Modes: deck (blue), notes (warm), code (phosphor). `a` cycles; chips are clickable. Programs sit on the desk as icons; the toolbar is modes only. The desk itself added no syscall. Process control is ABI v8 (`SYS_PROCS`, `SYS_PSCTL`, `SYS_POWER`). The wall clock is ABI v9 (`SYS_CLOCK`).
-- **Directories** stay inside the existing 24-byte file name. A directory is a zero-byte file ending in `/`. A file in it is a path such as `notes/hello`. The current directory lives in `terminal.elf` only. `summon` still uses the stored program name. ABI stays v7.
+- **G6 desk:** interactive boot execs `chaoswm` when `fb_available()` and stays there. Palette follows the `attune` file (`user/attune.h`). Modes: deck (blue), notes (warm), code (phosphor). `a` cycles; chips are clickable. Programs sit on the desk as icons; the toolbar is modes only. The desk itself added no syscall. Process control shipped as ABI v8 (`SYS_PROCS`, `SYS_PSCTL`, `SYS_POWER`). The wall clock shipped as ABI v9 (`SYS_CLOCK`). The current syscall table is ABI v11.
+- **Directories** stay inside the existing 24-byte file name. A directory is a zero-byte file ending in `/`. A file in it is a path such as `notes/hello`. The current directory lives in `terminal.elf` only. `summon` still uses the stored program name. The name table on disk is filesystem version 3 (`dir_lba`); that did not add a syscall.
 
 ## Framebuffer drawing rules (G1)
 

@@ -9,9 +9,9 @@
  * so scripted tests can run before gate.elf has created anyone.
  *
  * A directory is a zero-byte file whose name ends in '/'. A file inside
- * it keeps the path in that same name ("notes/hello"). wander / abode /
- * forge track the current directory here. summon still runs a program
- * by its stored name, so root programs keep working after wander.
+ * it keeps the path in that same name ("home/ideas.txt"). wander / abode /
+ * forge track the current directory here. summon of a bare name runs
+ * the program in bin/.
  * Hidden names are leaves that start with '.'. conceal renames into
  * that form; unveil lists them. */
 
@@ -171,6 +171,18 @@ static int dir_marker(const char *path, char *out) {
     return 1;
 }
 
+static ufileinfo_t *list_buf;
+static int list_n;
+
+static ufileinfo_t *load_list(void) {
+    if (!list_buf)
+        list_buf = (ufileinfo_t *) umalloc(UFS_MAX_FILES * (uint32_t) sizeof(ufileinfo_t));
+    if (!list_buf) { list_n = 0; return 0; }
+    list_n = ulistfiles(list_buf, UFS_MAX_FILES);
+    if (list_n < 0) list_n = 0;
+    return list_buf;
+}
+
 static int name_exists(const char *name) {
     char b;
     return ureadfile(name, &b, 1) >= 0;
@@ -199,8 +211,8 @@ static int has_child(const char *path) {
     char mark[NAME_MAX];
     if (!dir_marker(path, mark)) return 1;
     int mlen = plen(mark);
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
         if (!starts_with(files[i].name, mark)) continue;
@@ -281,8 +293,8 @@ static int rewrite_prefix(const char *name, const char *oldp, const char *newp,
 static int collect_tree(const char *path, char names[][NAME_MAX], int max) {
     char mark[NAME_MAX];
     if (!dir_marker(path, mark)) return -1;
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     if (n < 0) n = 0;
     int c = 0;
     for (int i = 0; i < n; i++) {
@@ -417,8 +429,8 @@ static void cmd_lexicon(void) {
 }
 
 static void cmd_reveal(void) {
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     int shown = 0;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
@@ -472,7 +484,7 @@ static void cmd_forge(const verb_t *v, const char *args) {
 
 static int open_editor(const char *name) {
     char cmd[40];
-    const char *pre = "scribe.elf ";
+    const char *pre = "bin/scribe.elf ";
     int i = 0;
     while (pre[i]) {
         cmd[i] = pre[i];
@@ -622,8 +634,8 @@ static void cmd_relocate(const verb_t *v, const char *args) {
 
 static void cmd_seek(const verb_t *v, const char *args) {
     if (!args[0]) { usage(v, "WORD"); return; }
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     int hits = 0;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
@@ -651,8 +663,8 @@ static void cmd_seek(const verb_t *v, const char *args) {
 }
 
 static int lookup_name(const char *stored, ufileinfo_t *info) {
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
         if (!streq(files[i].name, stored)) continue;
@@ -743,8 +755,31 @@ static void cmd_conceal(const verb_t *v, const char *args) {
 }
 
 static void cmd_summon(const verb_t *v, const char *args) {
-    if (!args[0]) { usage(v, "PROGRAM [args]"); return; }
-    int rc = urun(args);
+    char prog[NAME_MAX];
+    take_name(args, prog);
+    if (!prog[0]) { usage(v, "PROGRAM [args]"); return; }
+    /* A bare name is a program in bin/. An explicit path is used as given. */
+    char path[NAME_MAX];
+    pcopy(path, prog, NAME_MAX);
+    int slash = 0;
+    for (int i = 0; prog[i]; i++)
+        if (prog[i] == '/') slash = 1;
+    if (!slash && !name_exists(prog) && plen("bin/") + plen(prog) < NAME_MAX) {
+        const char *pre = "bin/";
+        int i = 0;
+        while (pre[i]) { path[i] = pre[i]; i++; }
+        pcopy(path + i, prog, NAME_MAX - i);
+    }
+    const char *rest = skip_name(args);
+    char cmd[96];
+    int n = 0;
+    for (int j = 0; path[j] && n < (int) sizeof(cmd) - 1; j++) cmd[n++] = path[j];
+    if (rest[0] && n < (int) sizeof(cmd) - 1) {
+        cmd[n++] = ' ';
+        for (int j = 0; rest[j] && n < (int) sizeof(cmd) - 1; j++) cmd[n++] = rest[j];
+    }
+    cmd[n] = '\0';
+    int rc = urun(cmd);
     if (rc < 0) {
         uprint("cannot summon ");
         uprint(args);
@@ -876,7 +911,7 @@ static void cmd_essence(void) {
     uprint("\n  user ");
     uprint(who);
     uprint(ascended ? "  admin\n" : "\n");
-    uprint("  volume one table, paths allowed, 32 names, 32 KiB each\n");
+    uprint("  volume one table, paths allowed, 10000 names\n");
     uprint("  uptime ");
     uprint_dec(uuptime() / TICKS_HZ);
     uprint(" seconds\n  moment ");
@@ -893,8 +928,8 @@ static void cmd_essence(void) {
 }
 
 static void cmd_provisions(void) {
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = load_list();
+    int n = list_n;
     uint32_t bytes = 0;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) bytes += files[i].size;

@@ -54,10 +54,15 @@ static void cmd_help(void) {
 }
 
 static void cmd_roster(void) {
-    ufileinfo_t files[32];
-    int n = ulistfiles(files, 32);
+    ufileinfo_t *files = (ufileinfo_t *) umalloc(UFS_MAX_FILES * (uint32_t) sizeof(ufileinfo_t));
+    if (!files) {
+        uprint("roster: out of memory\n");
+        return;
+    }
+    int n = ulistfiles(files, UFS_MAX_FILES);
     if (n <= 0) {
         uprint("(empty disk)\n");
+        ufree(files);
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -67,6 +72,7 @@ static void cmd_roster(void) {
         uprint_dec(files[i].size);
         uprint(" bytes)\n");
     }
+    ufree(files);
 }
 
 static void cmd_peek(const char *path) {
@@ -86,7 +92,7 @@ static void cmd_peek(const char *path) {
 
 static void run_scribe(const char *name) {
     char cmd[64];
-    const char *pfx = "scribe.elf ";
+    const char *pfx = "bin/scribe.elf ";
     int i = 0;
     while (pfx[i] && i < 63) {
         cmd[i] = pfx[i];
