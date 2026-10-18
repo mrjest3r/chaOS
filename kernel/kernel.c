@@ -14,6 +14,7 @@
 #include "syscall.h"
 #include "elf.h"
 #include "initrd.h"
+#include "isobase.h"
 #include "../libc/string.h"
 #include "kernel.h"
 #include <stdint.h>
@@ -93,6 +94,9 @@ void kernel_main() {
         fs_organize();
     }
     seed_from_initrd();
+    /* The disc's BASE catalog fills in anything the initrd does not carry
+     * (Doom) and refreshes base programs. Personal names are not in it. */
+    base_install();
 
 #ifdef AUTOTEST
     run_early_selftests();

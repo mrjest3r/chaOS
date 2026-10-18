@@ -3,7 +3,7 @@
 ; Image layout (sectors):  0 = this   1..KERNEL_SECTORS = kernel.bin (padded)
 ;                          then INITRD_SECTORS of initrd.bin (user programs).
 ; Both counts come from the Makefile (-D). Load addresses (see
-; cpu/memlayout.h): kernel at 0x10000, initrd at INITRD_PHYS = 0x34000.
+; cpu/memlayout.h): kernel at 0x10000, initrd at INITRD_PHYS = 0x38000.
 [org 0x7c00]
 KERNEL_OFFSET equ 0x10000
 %ifndef KERNEL_SECTORS
@@ -37,7 +37,7 @@ load_kernel:
     mov ax, 1
     mov cx, KERNEL_SECTORS
     call disk_load
-    mov ax, 0x3400          ; initrd -> 0x34000 (INITRD_PHYS)
+    mov ax, 0x3800          ; initrd -> 0x38000 (INITRD_PHYS)
     mov es, ax
     mov ax, 1 + KERNEL_SECTORS
     mov cx, INITRD_SECTORS

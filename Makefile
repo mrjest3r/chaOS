@@ -14,11 +14,11 @@ CFLAGS = -g -ffreestanding -Wall -Wextra -fno-exceptions -fno-builtin -m32
 
 # ---- boot image layout (mirror of cpu/memlayout.h) -----------------------
 # Sector 0 boot sector, then KERNEL_SECTORS of kernel.bin (zero-padded; loaded
-# at 0x10000), then initrd.bin (loaded at INITRD_PHYS 0x30000). The kernel's
-# .bss must also end below 0x30000 and the initrd below 0x88000.
+# at 0x10000), then initrd.bin (loaded at INITRD_PHYS 0x38000). The kernel's
+# .bss must end below that, and the initrd below the 0x90000 boot stack.
 KERNEL_SECTORS = 256
-INITRD_PHYS = 212992
-INITRD_MAX  = 360448
+INITRD_PHYS = 229376
+INITRD_MAX  = 327680
 
 # ---- user-space programs -------------------------------------------------
 # User programs are compiled and linked separately from the kernel, then
@@ -87,15 +87,19 @@ run: os-image.bin disk.img programs
 chaos.flp: os-image.bin
 	cp os-image.bin chaos.flp
 
-# CD for VirtualBox. El Torito floppy emulation (fd1.4): the BIOS presents
-# chaos.flp as drive 0x00, which is the geometry boot/disk.asm already uses.
-# Do not pass -no-emul-boot (2048-byte CD sectors) or -boot-info-table (it
-# patches the boot sector). Firmware must be BIOS, not EFI.
-chaos.iso: chaos.flp
+# Install disc. El Torito still boots chaos.flp (the BIOS only understands
+# that 1.44 MB floppy). BASE/ next to it is the base OS the kernel copies
+# on after boot: the system programs plus Doom. Personal files are not in
+# the image; they stay on the IDE disk. Firmware must be BIOS, not EFI.
+# Do not pass -no-emul-boot or -boot-info-table.
+chaos.iso: chaos.flp disk.img ${USER_PROGS} tools/stagebase.c
 	rm -rf isodir
-	mkdir isodir
+	mkdir -p isodir/base
 	cp chaos.flp isodir/chaos.flp
-	xorriso -as mkisofs -o $@ -V CHAOS -b chaos.flp -c boot.cat isodir
+	@tmp=`mktemp /tmp/chaos-stagebase.XXXXXX` && \
+	 ${HOSTCC} -O2 -Wall -o $$tmp tools/stagebase.c && chmod +x $$tmp && \
+	 $$tmp disk.img isodir/base ${USER_PROGS} && rm -f $$tmp
+	xorriso -as mkisofs -iso-level 3 -o $@ -V CHAOS -b chaos.flp -c boot.cat isodir
 	rm -rf isodir
 	@xorriso -indev $@ -report_el_torito plain 2>/dev/null | grep -q fd1.4 || \
 	  { echo "error: chaos.iso is not a 1.44 MB El Torito floppy"; exit 1; }

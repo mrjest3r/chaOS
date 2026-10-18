@@ -103,7 +103,7 @@ Syscall numbers / structs for userspace: [`ABI.md`](ABI.md).
 |----------------|---------|
 | `KERNEL_VIRT_BASE` `0xC0000000` | Higher half |
 | Load phys `0x10000` | Boot stub + kernel LMA; `KERNEL_LOAD_SECTORS` 256 (128 KiB budget, Makefile asserts) |
-| `INITRD_PHYS` `0x34000` | Initrd blob ("CHAOSIRD", all user ELFs) loaded by bootsect; `INITRD_MAX` `0x58000` bytes (ends below the `0x90000` boot stack) |
+| `INITRD_PHYS` `0x38000` | Initrd blob ("CHAOSIRD", all user ELFs) loaded by bootsect; `INITRD_MAX` `0x50000` bytes (ends at `0x88000`, under the `0x90000` boot stack) |
 | `USER_BASE` `0x40000000` | User link address |
 | `SURF_BASE` `0x50000000` | Per-task pixel surfaces, 4 × 4 MiB PDE slots (G2) |
 | `HIGH_PDE_INDEX` 768 | Higher-half PDE slot |

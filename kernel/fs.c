@@ -2,6 +2,7 @@
 #include "kheap.h"
 #include "../drivers/ata.h"
 #include "../drivers/serial.h"
+#include "../cpu/vmm.h"
 #include "../libc/string.h"
 #include "../libc/mem.h"
 
@@ -24,11 +25,13 @@
 #define LEGACY_SECTORS  64          /* old layout: 32 KiB reserved per name */
 #define DISK_CAP_SECTORS (1024u * 1024u * 1024u / 512u)
 
-/* Diskless boots keep a small heap-backed volume. The name table is not
- * this size: 10000 slots must not reserve hundreds of megabytes of RAM. */
-#define RAM_VOLUME_SECTORS (DATA_START_LBA + FS_LEGACY_SLOTS * LEGACY_SECTORS)
+/* 40 MiB so a disc-only boot can hold the base OS, including Doom's WAD.
+ * Chunks are 32 KiB and come from the frame pool on first write. The
+ * 10000-name table is a few hundred KiB inside this volume, not a
+ * reservation of one slot per name. */
+#define RAM_VOLUME_SECTORS (40u * 1024u * 1024u / 512u)
 #define RAM_CHUNK_SECTORS 64
-#define RAM_CHUNKS ((RAM_VOLUME_SECTORS + RAM_CHUNK_SECTORS - 1) / RAM_CHUNK_SECTORS)
+#define RAM_CHUNKS (RAM_VOLUME_SECTORS / RAM_CHUNK_SECTORS)
 
 static int ram_backed = 0;
 static uint8_t *ram_chunk[RAM_CHUNKS];
@@ -52,8 +55,15 @@ static int dev_write(uint32_t lba, uint8_t count, const uint8_t *buf) {
         uint32_t c = lba / RAM_CHUNK_SECTORS;
         if (c >= RAM_CHUNKS) return -1;
         if (!ram_chunk[c]) {
-            ram_chunk[c] = (uint8_t *) malloc(RAM_CHUNK_SECTORS * 512);
-            if (!ram_chunk[c]) return -1;
+            /* Eight contiguous frames. The pool is untouched at mount, so
+             * the first allocations come out in order. */
+            uint32_t base = frame_alloc();
+            if (!base) return -1;
+            for (int p = 1; p < 8; p++) {
+                uint32_t f = frame_alloc();
+                if (f != base + (uint32_t) p * 4096u) return -1;
+            }
+            ram_chunk[c] = (uint8_t *) base;
             memory_set(ram_chunk[c], 0, RAM_CHUNK_SECTORS * 512);
         }
         memory_copy((uint8_t *) buf, ram_chunk[c] + (lba % RAM_CHUNK_SECTORS) * 512, 512);
@@ -310,7 +320,7 @@ static int fs_migrate(void) {
 int fs_mount() {
     if (mounted) return 1;
     if (!init_ata()) {
-        /* No disk: a small RAM volume. The initrd fills it right after. */
+        /* No disk: RAM volume large enough for the base OS and Doom. */
         ram_backed = 1;
         volume_end = RAM_VOLUME_SECTORS;
         for (int i = 0; i < RAM_CHUNKS; i++) ram_chunk[i] = 0;
@@ -495,6 +505,66 @@ int fs_size(const char *name) {
     if (!mounted) return -1;
     int idx = fs_find(name);
     return idx < 0 ? -1 : (int) slot_tab()[idx].size;
+}
+
+/* Reserve a file of exactly 'size' bytes without copying payload.
+ * Returns 1 if that name already has this size, 0 if the caller should
+ * fill it, -1 on error. */
+int fs_prepare(const char *name, uint32_t size) {
+    if (!mounted || !name || !name[0] || size > FS_MAX_FILESIZE) return -1;
+    int have = fs_size(name);
+    if (have == (int) size) return 1;
+    if (have >= 0 && fs_delete(name) != 0) return -1;
+
+    fs_entry_t *tab = slot_tab();
+    int idx = fs_alloc_slot();
+    if (idx < 0) return -1;
+    for (int k = 0; k < FS_NAME_LEN; k++) tab[idx].name[k] = 0;
+    for (int k = 0; name[k] && k < FS_NAME_LEN - 1; k++) tab[idx].name[k] = name[k];
+    tab[idx].used = 1;
+    tab[idx].size = 0;
+    tab[idx].start_lba = 0;
+    sb.num_files++;
+
+    uint32_t sectors = sectors_of(size);
+    if (sectors) {
+        uint32_t lba = alloc_run(sectors, -1);
+        if (!lba) {
+            tab[idx].used = 0;
+            sb.num_files--;
+            return -1;
+        }
+        tab[idx].start_lba = lba;
+    }
+    tab[idx].size = size;
+    if (commit_slot(idx) != 0) return -1;
+    return 0;
+}
+
+int fs_write_at(const char *name, uint32_t offset, const uint8_t *data, uint32_t len) {
+    if (!mounted || !data) return -1;
+    int idx = fs_find(name);
+    if (idx < 0) return -1;
+    fs_entry_t *e = &slot_tab()[idx];
+    if (offset > e->size || len > e->size - offset) return -1;
+    while (len) {
+        uint32_t sec = offset / 512u;
+        uint32_t into = offset % 512u;
+        uint32_t n = 512u - into;
+        if (n > len) n = len;
+        if (into == 0 && n == 512u) {
+            if (dev_write(e->start_lba + sec, 1, data) != 0) return -1;
+        } else {
+            uint8_t buf[512];
+            if (dev_read(e->start_lba + sec, 1, buf) != 0) return -1;
+            memory_copy((uint8_t *) data, buf + into, (int) n);
+            if (dev_write(e->start_lba + sec, 1, buf) != 0) return -1;
+        }
+        data += n;
+        offset += n;
+        len -= n;
+    }
+    return 0;
 }
 
 int fs_rename(const char *from, const char *to) {

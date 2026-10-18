@@ -1,6 +1,10 @@
 # chaOS
 
-A 32-bit x86 hobby operating system built from scratch in C and assembly. chaOS boots from a floppy image, runs in protected mode with paging, and provides a small but real userspace: ring-3 processes with their own address spaces, system calls, and programs loaded from disk as ELF binaries.
+chaOS is a 32-bit x86 operating system written from scratch in C and assembly. It boots on its own, gives each program a private address space, and starts at a desk where you can open a terminal and run more than one window at a time.
+
+It is a hobby system, not a Unix clone. The terminal speaks its own command names. The install disc carries the base system and Doom. Accounts, notes, and anything you add later stay on the hard disk.
+
+New to operating systems? Read [How chaOS fits together](docs/HOW-IT-WORKS.md). That page walks the boot path in plain language and has a short set of presentation notes in the middle.
 
 ```
               888                  .d88888b.   .d8888b.
@@ -24,12 +28,12 @@ A 32-bit x86 hobby operating system built from scratch in C and assembly. chaOS 
 | **Multitasking** | Preemptive round-robin scheduler; kernel threads and ring-3 user tasks with sleep/yield/exit |
 | **I/O** | VBE framebuffer console (800×600), PS/2 keyboard + mouse (FB cursor), COM1 serial, ATA PIO disk |
 | **Input** | Blocking `SYS_GETCHAR` / `SYS_READLINE` syscalls; foreground programs own the keyboard |
-| **Storage** | Simple filesystem (fixed directory, up to 32 files) on the IDE disk, or in RAM when no disk is attached |
+| **Storage** | Filesystem on the IDE disk, or a 40 MiB RAM volume when no disk is attached. About 1 GiB on disk, 32 MiB per file, 10000 names. Programs live in `bin/`, account state in `sys/`, notes in `home/` |
 | **Userspace** | ELF32 loader, separate user build (`user/`), programs packed into the boot image (initrd) and installed at boot |
 | **Processes** | `SYS_SPAWN` / `SYS_WAIT`: programs can launch other programs and wait for them |
 | **Arguments** | Full `argc`/`argv`: command lines are delivered onto the new process's stack |
 | **Shell** | Desk terminal (`terminal.elf`); verb names in `user/verbs.h`. Kernel shell only when there is no framebuffer |
-| **Graphics** | VBE soft console, PS/2 mouse cursor, `chaoswm.elf` desk (boot-to-compositor, attune palette, terminal icon on the desk) |
+| **Graphics** | 800×600×32 framebuffer, PS/2 mouse cursor, `chaoswm` desk. Doom publishes a window onto that desk |
 | **Notes** | `scribe` opens a terminal text editor (`scribe FILE TEXT` creates a new file); `glance` / `reveal` stay in the terminal. `moment` is the clock, `age` is uptime |
 
 ## Requirements
@@ -48,21 +52,12 @@ CROSS = /usr/local/i386elfgcc/bin
 ## Quick start
 
 ```bash
-# Build the kernel, compile user programs, inject them into disk.img, and boot
 make run
 ```
 
-At the `>` prompt, try:
+QEMU opens the desk. The first boot asks you to name an account and set a password. Later boots ask for that name and password, then the desk. Open **terminal** (the icon, or press `t`) and try `lexicon`, `reveal`, and `summon hello.elf`.
 
-```
-help
-ls
-exec greet.elf
-exec ush.elf
-tasks
-frames
-shutdown
-```
+If the screen is text-only, the framebuffer did not come up. The kernel shell uses `help` and `exec bin/hello.elf`. `q` and F1 do not leave the desk when the framebuffer is up.
 
 ### Headless self-test
 
@@ -93,9 +88,11 @@ That cross-builds the C file and writes `beacon.elf` onto `disk.img`. From the t
 
 ## Running in a VM
 
-The boot image is `os-image.bin` / `chaos.flp` (kernel + initrd with every
-program). QEMU with std VGA (`make run`) starts the desk. `make chaos.iso`
-puts that same floppy in an El Torito CD for VirtualBox.
+The boot image is `os-image.bin` / `chaos.flp` (kernel + initrd with the
+system programs). QEMU with std VGA (`make run`) starts the desk.
+`make chaos.iso` is the install disc: that floppy, plus a `BASE` catalog
+with those programs and Doom. Personal files are not on the disc. They
+stay on the IDE disk. The kernel copies base files that are missing.
 
 ```bash
 make clean && make run          # QEMU, framebuffer desk
@@ -122,16 +119,17 @@ Manual UI setup:
 4. Display: **VBoxVGA** (not VMSVGA). The BIOS has no 32 bpp mode; the kernel
    sets 800×600×32 through the same Bochs interface QEMU uses.
 
-To boot the CD instead of the floppy: `make chaos.iso`, attach it to the IDE
-optical drive (port 1, device 0), set firmware to **BIOS**, and put **Optical**
-first in the boot order. Copy `chaos.iso` to `~/chaos-vbox-media/` if the
-project path contains a space. The disc is the 1.44 MB floppy image; a
-no-emulation ISO will not boot.
+To install from the disc: `make chaos.iso`, attach it as the IDE optical
+drive (port 1, device 0), set firmware to **BIOS**, and put **Optical**
+first. Copy `chaos.iso` to `~/chaos-vbox-media/` if the project path
+contains a space. The BIOS boots the floppy image inside the ISO. The
+kernel then copies the `BASE` catalog (system programs and Doom) onto the
+machine. A no-emulation ISO will not boot.
 
-Without the hard disk the OS boots into the RAM filesystem with all programs
-from the initrd; attach the disk only if you want files to persist. Rebuilt
-programs reach an existing `chaos-disk.vdi` automatically (the initrd
-re-installs anything whose size changed).
+With no hard disk the base system, including Doom, stays in a 40 MiB RAM
+volume. Attach a disk when you want accounts and notes to survive a reboot.
+Rebuilt system programs are copied again when their size changes. Files
+that are not in the base catalog are left alone.
 
 ### Physical x86 board (BIOS)
 
@@ -188,9 +186,9 @@ USER_PROGS = user/hello.elf user/spin.elf user/crash.elf user/myprog.elf
 
 ```bash
 make run
-# at the shell:
-exec myprog.elf
 ```
+
+From the terminal, `summon myprog.elf` finds `bin/myprog.elf`. The kernel shell (no framebuffer) uses `exec bin/myprog.elf`.
 
 Available user library calls (`user/ulib.h`): `uprint`, `ugetchar`, `ureadline`, `uspawn`, `uwait`, `urun`, `ulistfiles`, `upipe`, `upiperead`, `upipewrite`, `upipeclose`, `umouse`, `ugetpid`, `usleep`, `uwritefile`, `ureadfile`, `uuptime`, `uexit`.
 
@@ -201,7 +199,7 @@ Available user library calls (`user/ulib.h`): `uprint`, `ugetchar`, `ureadline`,
 Processes can exchange bytes through kernel pipes: `upipe()` returns a small pipe id, `upipewrite`/`upiperead` move data (blocking when full/empty), and `upipeclose` signals end-of-stream — a reader that drains a closed pipe gets `0` (EOF). Pipe ids are passed to children on the command line. Try it:
 
 ```text
-exec pipedemo.elf
+summon pipedemo.elf
 ```
 
 `pipedemo.elf` creates two pipes, spawns `pipekid.elf` with the ids as arguments, sends it a message and prints the uppercased reply the child sends back.
@@ -252,16 +250,24 @@ Syscall numbers are defined in `kernel/syscall.h` and shared with userspace.
 
 **PgUp / PgDn** scroll back through the last 200 lines of screen history; any new output snaps back to the live view.
 
+## Documentation
+
+- [How chaOS fits together](docs/HOW-IT-WORKS.md) — boot path and layout, for people new to OS work, with presentation notes
+- [Syscall ABI](docs/agent/ABI.md) — version 11
+- [Command names](docs/agent/LEXICON.md)
+- [Hardware bring-up](docs/agent/BRINGUP.md)
+
 ## Project layout
 
 ```
-boot/          Boot sector, real-mode disk loader, switch to protected mode
-cpu/           GDT, IDT, paging, VMM (frame allocator + address spaces), timer, context switch
-drivers/       VGA/FB console, keyboard, serial, ATA disk
-kernel/        Main kernel, shell, heap, filesystem, tasks, syscalls, ELF loader
-libc/          Minimal freestanding C library
-user/          User-space programs, crt0, syscall wrappers (ulib)
-tools/         Host-side tools: mkfs (disk.img), mkinitrd (initrd.bin packed into the boot image)
+boot/          Boot sector, A20, protected mode, VBE
+cpu/           GDT, IDT, paging, frame pool, timer, context switch
+drivers/       Framebuffer, keyboard, mouse, serial, ATA, CD (ATAPI), HDA
+kernel/        Boot, shell, heap, filesystem, tasks, syscalls, ELF loader
+libc/          Small freestanding C library for the kernel
+user/          Desk, terminal, programs, crt0, syscall wrappers
+tools/         Host tools: mkfs, mkinitrd, the ISO base catalog
+docs/          Map, syscall ABI, and the newcomer tour
 Makefile
 ```
 
@@ -311,3 +317,7 @@ Both kernel mappings are **supervisor-only** in every address space. User progra
 - Network and packages (the lexicon names exist; nothing speaks on the wire)
 - Doom music (effects already mix into the HDA stream)
 - ELF shared libraries or dynamic linking
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 mrjest3r.

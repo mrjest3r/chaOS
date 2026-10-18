@@ -47,6 +47,11 @@ int fs_exists(const char *name);
 /* Size in bytes of an existing file, or -1. */
 int fs_size(const char *name);
 
+/* Reserve 'size' bytes for 'name'. 1 = already that size, 0 = ready to
+ * fill with fs_write_at, -1 = error. */
+int fs_prepare(const char *name, uint32_t size);
+int fs_write_at(const char *name, uint32_t offset, const uint8_t *data, uint32_t len);
+
 /* 1 when the filesystem lives in RAM (no IDE disk found; nothing persists). */
 int fs_is_ram(void);
 
